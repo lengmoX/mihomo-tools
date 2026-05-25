@@ -570,6 +570,7 @@ function App() {
 
   // Modals state
   const [ruleModal, setRuleModal] = useState<RuleModalState | null>(null);
+  const [infoModalRule, setInfoModalRule] = useState<ProxyRule | null>(null);
 
   // Batch import state
   const [batchAddOpen, setBatchAddOpen] = useState(false);
@@ -1388,12 +1389,12 @@ function App() {
                             <h3>{rule.remark}</h3>
                           </div>
                           {runtimeStatus.running && rule.enabled && ruleStats[rule.inbound.port] && (
-                            <div className="traffic-stats">
+                            <div className="traffic-stats" style={{ display: "flex", flexDirection: "column", gap: "2px", marginTop: "4px" }}>
                               <span className="traffic-speeds">
-                                ↑ {formatSpeed(ruleStats[rule.inbound.port].uploadSpeed)} ↓ {formatSpeed(ruleStats[rule.inbound.port].downloadSpeed)}
+                                ↑ {formatSpeed(ruleStats[rule.inbound.port].uploadSpeed)}
                               </span>
-                              <span className="traffic-totals">
-                                (总量: ↑ {formatTraffic(ruleStats[rule.inbound.port].uploadTotal)} ↓ {formatTraffic(ruleStats[rule.inbound.port].downloadTotal)})
+                              <span className="traffic-speeds">
+                                ↓ {formatSpeed(ruleStats[rule.inbound.port].downloadSpeed)}
                               </span>
                             </div>
                           )}
@@ -1430,13 +1431,16 @@ function App() {
                             onClick={() => void checkRuleIp(rule)}
                             disabled={isBusy || !rule.enabled}
                           >
-                            {isChecking ? "检测中" : "IP检测"}
+                            {isChecking ? "检测中" : "IP"}
                           </button>
                         </div>
 
                         <div className="rule-actions">
                           <button className="small-icon-button" onClick={() => void toggleRuleEnabled(rule)} disabled={isBusy} title={rule.enabled ? "停用" : "启用"}>
                             <Icon name={rule.enabled ? "stop" : "play"} />
+                          </button>
+                          <button className="small-icon-button" onClick={() => setInfoModalRule(rule)} title="规则信息">
+                            <Icon name="info" />
                           </button>
                           <button className="small-icon-button" onClick={() => void handleDuplicateRule(rule.id)} disabled={isBusy} title="复制">
                             <Icon name="copy" />
@@ -1506,6 +1510,71 @@ function App() {
             </div>
           ) : null}
         </section>
+
+      {/* MODAL: ProxyRule Info Details */}
+      {infoModalRule && (
+        <div className="modal-layer" onClick={() => setInfoModalRule(null)}>
+          <div className="rule-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: "480px" }}>
+            <div className="modal-header">
+              <div>
+                <p className="eyebrow">流量与详情</p>
+                <h2>规则信息: {infoModalRule.remark}</h2>
+                <p className="modal-description">查看该端口转发规则的实时速率与历史累计流量数据。</p>
+              </div>
+              <button className="clear-search-btn" onClick={() => setInfoModalRule(null)} aria-label="关闭">
+                <Icon name="close" />
+              </button>
+            </div>
+            <div className="modal-body" style={{ gap: "var(--space-4)" }}>
+              <div className="form-section">
+                <div className="section-heading">
+                  <h3>基本信息</h3>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: "8px", fontSize: "0.9rem", color: "var(--color-ink)" }}>
+                  <span style={{ color: "var(--color-ink-muted)" }}>本地地址:</span>
+                  <span style={{ fontFamily: "monospace" }}>{infoModalRule.inbound.listen}:{infoModalRule.inbound.port}</span>
+                  
+                  <span style={{ color: "var(--color-ink-muted)" }}>本地协议:</span>
+                  <span style={{ fontWeight: 700 }}>{infoModalRule.inbound.protocol.toUpperCase()}</span>
+                  
+                  <span style={{ color: "var(--color-ink-muted)" }}>出口节点:</span>
+                  <span style={{ fontFamily: "monospace" }}>{infoModalRule.outbound.protocol.toUpperCase()} ({getOutboundAddress(infoModalRule.outbound)})</span>
+                </div>
+              </div>
+
+              <div className="form-section">
+                <div className="section-heading">
+                  <h3>流量统计</h3>
+                </div>
+                {runtimeStatus.running && infoModalRule.enabled && ruleStats[infoModalRule.inbound.port] ? (
+                  <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: "8px", fontSize: "0.9rem", color: "var(--color-ink)" }}>
+                    <span style={{ color: "var(--color-ink-muted)" }}>上传总量:</span>
+                    <span style={{ color: "var(--color-accent)", fontWeight: 700, fontFamily: "monospace" }}>{formatTraffic(ruleStats[infoModalRule.inbound.port].uploadTotal)}</span>
+                    
+                    <span style={{ color: "var(--color-ink-muted)" }}>下载总量:</span>
+                    <span style={{ color: "var(--color-accent-2)", fontWeight: 700, fontFamily: "monospace" }}>{formatTraffic(ruleStats[infoModalRule.inbound.port].downloadTotal)}</span>
+                    
+                    <span style={{ color: "var(--color-ink-muted)" }}>当前速度:</span>
+                    <span style={{ fontFamily: "monospace" }}>↑ {formatSpeed(ruleStats[infoModalRule.inbound.port].uploadSpeed)} / ↓ {formatSpeed(ruleStats[infoModalRule.inbound.port].downloadSpeed)}</span>
+                    
+                    <span style={{ color: "var(--color-ink-muted)" }}>活跃连接数:</span>
+                    <span>{ruleStats[infoModalRule.inbound.port].activeConnections} 个连接</span>
+                  </div>
+                ) : (
+                  <div style={{ color: "var(--color-ink-muted)", fontSize: "0.9rem", textAlign: "center", padding: "12px 0" }}>
+                    内核未运行或规则未启用，暂无实时数据。
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="modal-footer" style={{ justifyContent: "flex-end" }}>
+              <button className="primary-button" onClick={() => setInfoModalRule(null)} style={{ minWidth: "80px" }}>
+                确定
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL: ProxyRule Add/Edit */}
       {ruleModal && (
