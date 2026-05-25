@@ -59,13 +59,23 @@ pub fn generate_config_value(state: &AppState) -> CommandResult<Value> {
         "dns": {
             "enable": true,
             "ipv6": false,
-            "enhanced-mode": "redir-host",
+            "enhanced-mode": "fake-ip",
+            "fake-ip-range": "198.18.0.1/16",
             "nameserver": [
-                "223.5.5.5",
-                "119.29.29.29",
-                "180.76.76.76",
-                "8.8.8.8"
-            ]
+                "https://1.1.1.1/dns-query",
+                "https://8.8.8.8/dns-query"
+            ],
+            "proxy-server-nameserver": [
+                "https://223.5.5.5/dns-query",
+                "https://223.6.6.6/dns-query"
+            ],
+            "direct-nameserver": [
+                "https://223.5.5.5/dns-query",
+                "https://223.6.6.6/dns-query"
+            ],
+            "respect-rules": true,
+            "use-hosts": false,
+            "use-system-hosts": false
         },
         "listeners": listeners,
         "proxies": proxies,
