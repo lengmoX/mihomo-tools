@@ -1,0 +1,82 @@
+name: Release Portable Package
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get version
+        id: get_version
+        shell: pwsh
+        run: |
+          $ver = (Get-Content version.txt).Trim()
+          echo "VERSION=$ver" >> $env:GITHUB_OUTPUT
+
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-pc-windows-msvc
+
+      - name: Download Xray Core
+        run: pnpm run download-xray
+
+      - name: Build Tauri app
+        run: pnpm tauri build --no-bundle
+
+      - name: Prepare portable layout
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path xray-tools-portable
+          New-Item -ItemType Directory -Force -Path xray-tools-portable/data
+          Copy-Item -Path src-tauri/target/release/xray-tools.exe -Destination xray-tools-portable/xray-tools.exe
+          Copy-Item -Recurse -Path xray -Destination xray-tools-portable/xray
+          # Create zip archive of the directory contents
+          tar -a -c -f "xray-tools-windows-x64-v${{ steps.get_version.outputs.VERSION }}.zip" -C xray-tools-portable .
+
+      - name: Create Release and Upload Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.get_version.outputs.VERSION }}
+          files: xray-tools-windows-x64-v${{ steps.get_version.outputs.VERSION }}.zip
+          name: Release v${{ steps.get_version.outputs.VERSION }}
+          body: |
+            Portable release of xray-tools for Windows x64.
+            
+            This package includes:
+            - `xray-tools.exe` (main GUI controller)
+            - `xray/` (pre-configured folder containing the latest official Xray Core)
+            - `data/` (pre-created folder for local configurations)
+            
+            ### Installation:
+            Extract the zip file to any directory and run `xray-tools.exe`.
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

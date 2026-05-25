@@ -1,0 +1,35 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.sisyphus
+
+# VS Code (track shared launch.json, tasks.json, and extensions.json)
+.vscode/settings.json
+.vscode/*.code-workspace
+
+# Xray Core
+xray/
+
+# Portable release packaging outputs
+xray-tools-portable/
+*.zip
+

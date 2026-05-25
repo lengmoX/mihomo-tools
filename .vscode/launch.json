@@ -1,0 +1,35 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Tauri Dev (CodeLLDB)",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/src-tauri/target/debug/xray-tools.exe",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "tauri:dev",
+      "sourceLanguages": ["rust"]
+    },
+    {
+      "name": "Tauri Dev (MSVC Debugger)",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/src-tauri/target/debug/xray-tools.exe",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "tauri:dev",
+      "environment": []
+    },
+    {
+      "name": "Tauri Build (打包应用)",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["tauri", "build"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    }
+  ]
+}
