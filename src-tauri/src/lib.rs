@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn parses_vless_reality_url_with_packet_encoding() {
-        let result = parse_outbound_url_value("vless://f96a3fb2-d2da-4ea3-958e-6c9bb15495bb@19b2d-8dc30k.bz.s1-h2a89c.gov-oss.cn:48778?security=reality&type=tcp&packetEncoding=none&sni=itunes.apple.com&fp=chrome&flow=xtls-rprx-vision&sid=2f787a31&pbk=AOV9rSWpGdrZXUpQyCtrETc2PXLsngTo3owYMysZRkw#Vless.Hong%20Kong%2001")
+        let result = parse_outbound_url_value("vless://f96a3fb2-d2da-4ea3-958e-6c9bb15495bb@reality.example.com:48778?security=reality&type=tcp&packetEncoding=none&sni=itunes.apple.com&fp=chrome&flow=xtls-rprx-vision&sid=2f787a31&pbk=AOV9rSWpGdrZXUpQyCtrETc2PXLsngTo3owYMysZRkw#Vless.Hong%20Kong%2001")
             .expect("valid VLESS REALITY URL with packetEncoding");
 
         assert_eq!(result.display_name, Some("Vless.Hong Kong 01".to_string()));
@@ -177,7 +177,7 @@ mod tests {
         let OutboundConfig::Vless(outbound) = result.outbound else {
             panic!("expected VLESS outbound");
         };
-        assert_eq!(outbound.address, "19b2d-8dc30k.bz.s1-h2a89c.gov-oss.cn");
+        assert_eq!(outbound.address, "reality.example.com");
         assert_eq!(outbound.port, 48778);
         assert_eq!(outbound.flow, Some("xtls-rprx-vision".to_string()));
         let reality = outbound.reality.expect("reality");
@@ -478,14 +478,14 @@ mod tests {
     #[test]
     fn parses_trojan_with_special_characters_in_password() {
         let result = parse_outbound_url_value(
-            "trojan://8r<[9'l6hAO#8ZQi@161.35.22.108:2087?sni=Koma-YT.PAGeS.Dev&type=ws&path=%2FtrTelegram%F0%9F%87%A8%F0%9F%87%B3%20%40WangCai2&fp=chrome#%F0%9F%8F%B4%E2%80%8D%E2%98%A0_289"
+            "trojan://8r<[9'l6hAO#8ZQi@198.51.100.1:2087?sni=Koma-YT.PAGeS.Dev&type=ws&path=%2FtrTelegram%F0%9F%87%A8%F0%9F%87%B3%20%40WangCai2&fp=chrome#%F0%9F%8F%B4%E2%80%8D%E2%98%A0_289"
         )
         .expect("valid Trojan URL with special characters in password");
 
         let OutboundConfig::Trojan(outbound) = result.outbound else {
             panic!("expected Trojan outbound");
         };
-        assert_eq!(outbound.address, "161.35.22.108");
+        assert_eq!(outbound.address, "198.51.100.1");
         assert_eq!(outbound.port, 2087);
         assert_eq!(outbound.password, "8r<[9'l6hAO#8ZQi");
         assert_eq!(outbound.transport.kind, TrojanTransportKind::Ws);
