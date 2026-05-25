@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 use crate::models::{
-    AppState, CommandResult, OutboundConfig
+    AppState, CommandResult, OutboundConfig, InboundProtocol
 };
 
 pub fn generate_config_value(state: &AppState) -> CommandResult<Value> {
@@ -10,40 +10,47 @@ pub fn generate_config_value(state: &AppState) -> CommandResult<Value> {
     let mut proxies = Vec::new();
     let mut proxy_groups = Vec::new();
 
-    // 1. 生成 listeners
     for rule in state.rules.iter().filter(|r| r.enabled) {
-        // 查找对应的代理组名称
-        let group = state.groups.iter().find(|g| g.id == rule.group_id)
-            .ok_or_else(|| format!("Rule '{}' refers to non-existent group '{}'", rule.name, rule.group_id))?;
-        
-        let listener = json!({
+        let node_name = format!("node-{}", rule.id);
+        let group_name = format!("group-{}", rule.id);
+
+        // 1. 生成 listener
+        let inbound_type = match rule.inbound.protocol {
+            InboundProtocol::Mixed => "mixed",
+            InboundProtocol::Socks => "socks",
+            InboundProtocol::Http => "http",
+        };
+
+        let mut listener = json!({
             "name": format!("listener-{}", rule.id),
-            "type": rule.inbound_type,
-            "listen": rule.listen,
-            "port": rule.port,
-            "proxy": group.name,
+            "type": inbound_type,
+            "listen": rule.inbound.listen,
+            "port": rule.inbound.port,
+            "proxy": group_name,
         });
 
+        if let Some(auth) = &rule.inbound.auth {
+            if let Some(obj) = listener.as_object_mut() {
+                obj.insert("username".to_string(), json!(auth.username));
+                obj.insert("password".to_string(), json!(auth.password));
+            }
+        }
+
         listeners.push(listener);
-    }
 
-    // 2. 生成 proxies
-    for node in &state.proxies {
-        let proxy = generate_mihomo_proxy(node)?;
-        proxies.push(proxy);
-    }
+        // 2. 生成 proxy
+        let proxy_val = generate_mihomo_proxy_val(&node_name, &rule.outbound)?;
+        proxies.push(proxy_val);
 
-    // 3. 生成 proxy-groups
-    for group in &state.groups {
+        // 3. 生成 proxy-group
         let pg = json!({
-            "name": group.name,
-            "type": group.group_type, // "select"
-            "proxies": group.proxies,
+            "name": group_name,
+            "type": "select",
+            "proxies": vec![node_name, "DIRECT".to_string(), "REJECT".to_string()],
         });
         proxy_groups.push(pg);
     }
 
-    // 4. 组装全局配置
     Ok(json!({
         "mixed-port": 37890,
         "allow-lan": false,
@@ -58,54 +65,54 @@ pub fn generate_config_value(state: &AppState) -> CommandResult<Value> {
     }))
 }
 
-fn generate_mihomo_proxy(node: &crate::models::ProxyNode) -> CommandResult<Value> {
+fn generate_mihomo_proxy_val(name: &str, config: &OutboundConfig) -> CommandResult<Value> {
     let mut val = serde_json::Map::new();
-    val.insert("name".to_string(), json!(node.name));
+    val.insert("name".to_string(), json!(name));
 
-    match &node.config {
-        OutboundConfig::Socks(config) => {
-            val.insert("type".to_string(), json!("socks"));
-            val.insert("server".to_string(), json!(config.host));
-            val.insert("port".to_string(), json!(config.port));
-            if let Some(auth) = &config.auth {
+    match config {
+        OutboundConfig::Socks(cfg) => {
+            val.insert("type".to_string(), json!("socks5"));
+            val.insert("server".to_string(), json!(cfg.host));
+            val.insert("port".to_string(), json!(cfg.port));
+            if let Some(auth) = &cfg.auth {
                 val.insert("username".to_string(), json!(auth.username));
                 val.insert("password".to_string(), json!(auth.password));
             }
         }
-        OutboundConfig::Shadowsocks(config) => {
+        OutboundConfig::Shadowsocks(cfg) => {
             val.insert("type".to_string(), json!("ss"));
-            val.insert("server".to_string(), json!(config.address));
-            val.insert("port".to_string(), json!(config.port));
-            val.insert("cipher".to_string(), json!(config.method));
-            val.insert("password".to_string(), json!(config.password));
+            val.insert("server".to_string(), json!(cfg.address));
+            val.insert("port".to_string(), json!(cfg.port));
+            val.insert("cipher".to_string(), json!(cfg.method));
+            val.insert("password".to_string(), json!(cfg.password));
             val.insert("udp".to_string(), json!(true));
         }
-        OutboundConfig::Vless(config) => {
+        OutboundConfig::Vless(cfg) => {
             val.insert("type".to_string(), json!("vless"));
-            val.insert("server".to_string(), json!(config.address));
-            val.insert("port".to_string(), json!(config.port));
-            val.insert("uuid".to_string(), json!(config.id));
+            val.insert("server".to_string(), json!(cfg.address));
+            val.insert("port".to_string(), json!(cfg.port));
+            val.insert("uuid".to_string(), json!(cfg.id));
             val.insert("cipher".to_string(), json!("auto"));
             val.insert("udp".to_string(), json!(true));
 
-            if let Some(flow) = &config.flow {
+            if let Some(flow) = &cfg.flow {
                 if !flow.trim().is_empty() {
                     val.insert("flow".to_string(), json!(flow));
                 }
             }
 
-            let network = match config.transport.kind {
+            let network = match cfg.transport.kind {
                 crate::models::VlessTransportKind::Tcp => "tcp",
                 crate::models::VlessTransportKind::Ws => "ws",
             };
             val.insert("network".to_string(), json!(network));
 
-            if config.transport.kind == crate::models::VlessTransportKind::Ws {
+            if cfg.transport.kind == crate::models::VlessTransportKind::Ws {
                 let mut ws_opts = serde_json::Map::new();
-                if let Some(path) = &config.transport.path {
+                if let Some(path) = &cfg.transport.path {
                     ws_opts.insert("path".to_string(), json!(path));
                 }
-                if let Some(host) = &config.transport.host {
+                if let Some(host) = &cfg.transport.host {
                     let mut headers = serde_json::Map::new();
                     headers.insert("Host".to_string(), json!(host));
                     ws_opts.insert("headers".to_string(), json!(headers));
@@ -113,7 +120,7 @@ fn generate_mihomo_proxy(node: &crate::models::ProxyNode) -> CommandResult<Value
                 val.insert("ws-opts".to_string(), Value::Object(ws_opts));
             }
 
-            if let Some(tls) = &config.tls {
+            if let Some(tls) = &cfg.tls {
                 val.insert("tls".to_string(), json!(true));
                 if let Some(server_name) = &tls.server_name {
                     if !server_name.trim().is_empty() {
@@ -128,7 +135,7 @@ fn generate_mihomo_proxy(node: &crate::models::ProxyNode) -> CommandResult<Value
                         val.insert("client-fingerprint".to_string(), json!(fp));
                     }
                 }
-            } else if let Some(reality) = &config.reality {
+            } else if let Some(reality) = &cfg.reality {
                 val.insert("tls".to_string(), json!(true));
                 if let Some(server_name) = &reality.server_name {
                     if !server_name.trim().is_empty() {
@@ -148,25 +155,25 @@ fn generate_mihomo_proxy(node: &crate::models::ProxyNode) -> CommandResult<Value
                 val.insert("reality-opts".to_string(), Value::Object(reality_opts));
             }
         }
-        OutboundConfig::Trojan(config) => {
+        OutboundConfig::Trojan(cfg) => {
             val.insert("type".to_string(), json!("trojan"));
-            val.insert("server".to_string(), json!(config.address));
-            val.insert("port".to_string(), json!(config.port));
-            val.insert("password".to_string(), json!(config.password));
+            val.insert("server".to_string(), json!(cfg.address));
+            val.insert("port".to_string(), json!(cfg.port));
+            val.insert("password".to_string(), json!(cfg.password));
             val.insert("udp".to_string(), json!(true));
 
-            let network = match config.transport.kind {
+            let network = match cfg.transport.kind {
                 crate::models::TrojanTransportKind::Tcp => "tcp",
                 crate::models::TrojanTransportKind::Ws => "ws",
             };
             val.insert("network".to_string(), json!(network));
 
-            if config.transport.kind == crate::models::TrojanTransportKind::Ws {
+            if cfg.transport.kind == crate::models::TrojanTransportKind::Ws {
                 let mut ws_opts = serde_json::Map::new();
-                if let Some(path) = &config.transport.path {
+                if let Some(path) = &cfg.transport.path {
                     ws_opts.insert("path".to_string(), json!(path));
                 }
-                if let Some(host) = &config.transport.host {
+                if let Some(host) = &cfg.transport.host {
                     let mut headers = serde_json::Map::new();
                     headers.insert("Host".to_string(), json!(host));
                     ws_opts.insert("headers".to_string(), json!(headers));
@@ -174,7 +181,7 @@ fn generate_mihomo_proxy(node: &crate::models::ProxyNode) -> CommandResult<Value
                 val.insert("ws-opts".to_string(), Value::Object(ws_opts));
             }
 
-            if let Some(tls) = &config.tls {
+            if let Some(tls) = &cfg.tls {
                 val.insert("tls".to_string(), json!(true));
                 if let Some(server_name) = &tls.server_name {
                     if !server_name.trim().is_empty() {
@@ -189,7 +196,7 @@ fn generate_mihomo_proxy(node: &crate::models::ProxyNode) -> CommandResult<Value
                         val.insert("client-fingerprint".to_string(), json!(fp));
                     }
                 }
-            } else if let Some(reality) = &config.reality {
+            } else if let Some(reality) = &cfg.reality {
                 val.insert("tls".to_string(), json!(true));
                 if let Some(server_name) = &reality.server_name {
                     if !server_name.trim().is_empty() {

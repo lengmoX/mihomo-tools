@@ -8,7 +8,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use crate::models::{
-    AppState, CommandResult, ListenerRule, PortValidation, RuntimePaths,
+    AppState, CommandResult, ProxyRule, PortValidation, RuntimePaths, InboundProtocol
 };
 
 pub const STATE_FILE_NAME: &str = "app-state.json";
@@ -80,13 +80,13 @@ pub fn write_generated_config_to_disk(state: &AppState) -> CommandResult<PathBuf
     Ok(paths.generated_config_path)
 }
 
-pub fn duplicate_port_validation(rules: &[ListenerRule]) -> PortValidation {
+pub fn duplicate_port_validation(rules: &[ProxyRule]) -> PortValidation {
     let mut seen = HashSet::new();
     let mut duplicates = HashSet::new();
 
     for rule in rules.iter().filter(|rule| rule.enabled) {
-        if !seen.insert(rule.port) {
-            duplicates.insert(rule.port);
+        if !seen.insert(rule.inbound.port) {
+            duplicates.insert(rule.inbound.port);
         }
     }
 
@@ -97,15 +97,15 @@ pub fn duplicate_port_validation(rules: &[ListenerRule]) -> PortValidation {
 }
 
 pub fn port_validation_with_availability(
-    rules: &[ListenerRule],
+    rules: &[ProxyRule],
     duplicate_ports: Vec<u16>,
 ) -> PortValidation {
     let mut unavailable_ports = Vec::new();
     for rule in rules.iter().filter(|rule| rule.enabled) {
-        if !is_port_available(&rule.listen, rule.port)
-            && !unavailable_ports.contains(&rule.port)
+        if !is_port_available(&rule.inbound.listen, rule.inbound.port)
+            && !unavailable_ports.contains(&rule.inbound.port)
         {
-            unavailable_ports.push(rule.port);
+            unavailable_ports.push(rule.inbound.port);
         }
     }
     unavailable_ports.sort_unstable();
@@ -152,11 +152,11 @@ fn can_bind(address: SocketAddr) -> bool {
     TcpListener::bind(address).is_ok()
 }
 
-pub fn choose_unused_port(existing_rules: &[ListenerRule]) -> CommandResult<u16> {
+pub fn choose_unused_port(existing_rules: &[ProxyRule]) -> CommandResult<u16> {
     let used_ports = existing_rules
         .iter()
         .filter(|rule| rule.enabled)
-        .map(|rule| rule.port)
+        .map(|rule| rule.inbound.port)
         .collect::<HashSet<_>>();
     let total_ports = u32::from(MAX_AUTO_PORT - MIN_AUTO_PORT) + 1;
     let start_offset = random_port_offset(total_ports);
@@ -195,11 +195,11 @@ pub fn normalize_country_code(country: Option<String>) -> Option<String> {
     }
 }
 
-pub fn build_proxy_url(listen: &str, port: u16, inbound_type: &str) -> String {
-    let scheme = match inbound_type {
-        "socks" => "socks5h",
-        "http" => "http",
-        _ => "socks5h", // default to socks5h for mixed type URL representation
+pub fn build_proxy_url(listen: &str, port: u16, protocol: &InboundProtocol) -> String {
+    let scheme = match protocol {
+        InboundProtocol::Socks => "socks5h",
+        InboundProtocol::Http => "http",
+        _ => "socks5h",
     };
 
     format!("{scheme}://{}:{}", listen, port)

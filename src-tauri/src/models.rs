@@ -2,7 +2,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
 
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 pub const SUPPORTED_VLESS_FLOWS: &[&str] = &["xtls-rprx-vision", "xtls-rprx-vision-udp443"];
 pub const SUPPORTED_SHADOWSOCKS_METHODS: &[&str] = &[
     "2022-blake3-aes-128-gcm",
@@ -32,9 +32,7 @@ pub struct RuntimePaths {
 #[serde(rename_all = "camelCase")]
 pub struct AppState {
     pub schema_version: u32,
-    pub proxies: Vec<ProxyNode>,
-    pub groups: Vec<ProxyGroup>,
-    pub rules: Vec<ListenerRule>,
+    pub rules: Vec<ProxyRule>,
 }
 
 impl<'de> Deserialize<'de> for AppState {
@@ -51,8 +49,6 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
-            proxies: Vec::new(),
-            groups: Vec::new(),
             rules: Vec::new(),
         }
     }
@@ -67,38 +63,77 @@ pub fn deserialize_app_state_value(value: Value) -> CommandResult<AppState> {
     match schema_version {
         1 => {
             let v1 = migrate_v1_app_state(value)?;
-            migrate_v2_to_v3(v1)
+            migrate_v2_to_v4(v1)
         }
         2 => {
             let v2 = serde_json::from_value::<AppStateV2>(value)
                 .map_err(|error| format!("Failed to parse v2 app state JSON: {error}"))?;
-            migrate_v2_to_v3(v2)
+            migrate_v2_to_v4(v2)
         }
-        3 => serde_json::from_value::<AppStateV3>(value)
+        3 => {
+            let v3 = serde_json::from_value::<AppStateV3>(value)
+                .map_err(|error| format!("Failed to parse v3 app state JSON: {error}"))?;
+            migrate_v3_to_v4(v3)
+        }
+        4 => serde_json::from_value::<AppStateV4>(value)
             .map(|state| state.into_app_state())
-            .map_err(|error| format!("Failed to parse v3 app state JSON: {error}")),
+            .map_err(|error| format!("Failed to parse v4 app state JSON: {error}")),
         version => Err(format!("Unsupported app state schema version {version}")),
     }
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AppStateV3 {
+struct AppStateV4 {
     schema_version: u32,
-    proxies: Vec<ProxyNode>,
-    groups: Vec<ProxyGroup>,
-    rules: Vec<ListenerRule>,
+    rules: Vec<ProxyRule>,
 }
 
-impl AppStateV3 {
+impl AppStateV4 {
     fn into_app_state(self) -> AppState {
         AppState {
             schema_version: self.schema_version,
-            proxies: self.proxies,
-            groups: self.groups,
             rules: self.rules,
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppStateV3 {
+    rules: Vec<ListenerRuleV3>,
+    groups: Vec<ProxyGroupV3>,
+    proxies: Vec<ProxyNodeV3>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListenerRuleV3 {
+    id: String,
+    name: String,
+    listen: String,
+    port: u16,
+    inbound_type: String,
+    group_id: String,
+    enabled: bool,
+    #[serde(default)]
+    ip_check: Option<IpCheckResult>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct ProxyGroupV3 {
+    id: String,
+    name: String,
+    proxies: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProxyNodeV3 {
+    name: String,
+    config: OutboundConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,10 +148,26 @@ struct ProxyRuleV2 {
     id: String,
     remark: String,
     enabled: bool,
-    inbound: InboundConfig,
+    inbound: InboundConfigV2,
     outbound: OutboundConfig,
     #[serde(default)]
     ip_check: Option<IpCheckResult>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InboundConfigV2 {
+    protocol: InboundProtocolV2,
+    listen: String,
+    port: u16,
+    auth: Option<AuthConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum InboundProtocolV2 {
+    Socks,
+    Http,
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,7 +182,7 @@ struct ProxyRuleV1 {
     id: String,
     remark: String,
     enabled: bool,
-    inbound: InboundConfig,
+    inbound: InboundConfigV2,
     outbound: SocksOutboundConfigV1,
     #[serde(default)]
     ip_check: Option<IpCheckResult>,
@@ -168,87 +219,96 @@ fn migrate_v1_app_state(value: Value) -> CommandResult<AppStateV2> {
     })
 }
 
-fn migrate_v2_to_v3(v2_state: AppStateV2) -> CommandResult<AppState> {
-    let mut proxies = Vec::new();
-    let mut groups = Vec::new();
+fn migrate_v2_to_v4(v2: AppStateV2) -> CommandResult<AppState> {
+    let rules = v2
+        .rules
+        .into_iter()
+        .map(|r| ProxyRule {
+            id: r.id,
+            remark: r.remark,
+            enabled: r.enabled,
+            inbound: InboundConfig {
+                protocol: match r.inbound.protocol {
+                    InboundProtocolV2::Socks => InboundProtocol::Socks,
+                    InboundProtocolV2::Http => InboundProtocol::Http,
+                },
+                listen: r.inbound.listen,
+                port: r.inbound.port,
+                auth: r.inbound.auth,
+            },
+            outbound: r.outbound,
+            ip_check: r.ip_check,
+        })
+        .collect();
+
+    Ok(AppState {
+        schema_version: 4,
+        rules,
+    })
+}
+
+fn migrate_v3_to_v4(v3: AppStateV3) -> CommandResult<AppState> {
     let mut rules = Vec::new();
 
-    for rule in v2_state.rules {
-        let proxy_id = format!("proxy-{}", rule.id);
-        let group_id = format!("group-{}", rule.id);
-        
-        let proxy_name = if rule.remark.trim().is_empty() {
-            format!("Node-{}", rule.id)
-        } else {
-            format!("{}-Node", rule.remark.trim())
-        };
+    for rule in v3.rules {
+        let mut matching_outbound = None;
 
-        proxies.push(ProxyNode {
-            id: proxy_id.clone(),
-            name: proxy_name.clone(),
-            config: rule.outbound,
+        if let Some(group) = v3.groups.iter().find(|g| g.id == rule.group_id) {
+            let proxy_name = group
+                .proxies
+                .iter()
+                .find(|p| *p != "DIRECT" && *p != "REJECT" && *p != "fallback");
+
+            if let Some(p_name) = proxy_name {
+                if let Some(proxy_node) = v3.proxies.iter().find(|p| p.name == *p_name) {
+                    matching_outbound = Some(proxy_node.config.clone());
+                }
+            }
+        }
+
+        let outbound = matching_outbound.unwrap_or_else(|| {
+            OutboundConfig::Socks(SocksOutboundConfig {
+                host: "127.0.0.1".to_string(),
+                port: 1080,
+                auth: None,
+            })
         });
 
-        let group_name = if rule.remark.trim().is_empty() {
-            format!("Group-{}", rule.id)
-        } else {
-            format!("{}-Group", rule.remark.trim())
+        let inbound_protocol = match rule.inbound_type.as_str() {
+            "socks" => InboundProtocol::Socks,
+            "http" => InboundProtocol::Http,
+            _ => InboundProtocol::Mixed,
         };
 
-        groups.push(ProxyGroup {
-            id: group_id.clone(),
-            name: group_name.clone(),
-            group_type: "select".to_string(),
-            proxies: vec![proxy_name],
-        });
-
-        rules.push(ListenerRule {
+        rules.push(ProxyRule {
             id: rule.id,
-            name: rule.remark,
-            listen: rule.inbound.listen,
-            port: rule.inbound.port,
-            inbound_type: "mixed".to_string(),
-            group_id,
+            remark: rule.name,
             enabled: rule.enabled,
+            inbound: InboundConfig {
+                protocol: inbound_protocol,
+                listen: rule.listen,
+                port: rule.port,
+                auth: None,
+            },
+            outbound,
             ip_check: rule.ip_check,
         });
     }
 
     Ok(AppState {
-        schema_version: 3,
-        proxies,
-        groups,
+        schema_version: 4,
         rules,
     })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct ProxyNode {
+pub struct ProxyRule {
     pub id: String,
-    pub name: String,
-    pub config: OutboundConfig,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ProxyGroup {
-    pub id: String,
-    pub name: String,
-    pub group_type: String, // "select"
-    pub proxies: Vec<String>, // list of proxy name strings
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ListenerRule {
-    pub id: String,
-    pub name: String,
-    pub listen: String,
-    pub port: u16,
-    pub inbound_type: String, // "mixed" | "socks" | "http"
-    pub group_id: String, // linked group_id
+    pub remark: String,
     pub enabled: bool,
+    pub inbound: InboundConfig,
+    pub outbound: OutboundConfig,
     #[serde(default)]
     pub ip_check: Option<IpCheckResult>,
 }
@@ -279,6 +339,7 @@ pub struct InboundConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum InboundProtocol {
+    Mixed,
     Socks,
     Http,
 }
@@ -522,14 +583,12 @@ pub fn validate_state(state: &AppState) -> CommandResult<()> {
         ));
     }
 
-    validate_listener_rules(&state.rules)?;
-    validate_proxies(&state.proxies)?;
-    validate_groups(&state.groups, &state.proxies)?;
+    validate_rules(&state.rules)?;
 
     Ok(())
 }
 
-pub fn validate_listener_rules(rules: &[ListenerRule]) -> CommandResult<()> {
+pub fn validate_rules(rules: &[ProxyRule]) -> CommandResult<()> {
     let mut ids = HashSet::new();
     for rule in rules {
         if rule.id.trim().is_empty() {
@@ -538,61 +597,16 @@ pub fn validate_listener_rules(rules: &[ListenerRule]) -> CommandResult<()> {
         if !ids.insert(rule.id.as_str()) {
             return Err(format!("Duplicate rule id: {}", rule.id));
         }
-        if rule.name.trim().is_empty() {
-            return Err("Rule name cannot be empty".to_string());
+        if rule.remark.trim().is_empty() {
+            return Err("Rule remark cannot be empty".to_string());
         }
-        if rule.listen.trim().is_empty() {
+        if rule.inbound.listen.trim().is_empty() {
             return Err(format!("Rule '{}' has an empty listen address", rule.id));
         }
-        if rule.port < 1 {
+        if rule.inbound.port < 1 {
             return Err(format!("Rule '{}' has an invalid port", rule.id));
         }
-    }
-    Ok(())
-}
-
-pub fn validate_proxies(proxies: &[ProxyNode]) -> CommandResult<()> {
-    let mut names = HashSet::new();
-    for proxy in proxies {
-        if proxy.id.trim().is_empty() {
-            return Err("Proxy id cannot be empty".to_string());
-        }
-        if proxy.name.trim().is_empty() {
-            return Err("Proxy name cannot be empty".to_string());
-        }
-        if !names.insert(proxy.name.as_str()) {
-            return Err(format!("Duplicate proxy name: {}", proxy.name));
-        }
-        validate_outbound_config(&proxy.id, &proxy.config)?;
-    }
-    Ok(())
-}
-
-pub fn validate_groups(groups: &[ProxyGroup], proxies: &[ProxyNode]) -> CommandResult<()> {
-    let mut names = HashSet::new();
-    let proxy_names: HashSet<&str> = proxies.iter().map(|p| p.name.as_str()).collect();
-
-    for group in groups {
-        if group.id.trim().is_empty() {
-            return Err("Group id cannot be empty".to_string());
-        }
-        if group.name.trim().is_empty() {
-            return Err("Group name cannot be empty".to_string());
-        }
-        if !names.insert(group.name.as_str()) {
-            return Err(format!("Duplicate group name: {}", group.name));
-        }
-        if group.proxies.is_empty() {
-            return Err(format!("Group '{}' must contain at least one proxy", group.name));
-        }
-        for member in &group.proxies {
-            if member != "DIRECT" && member != "REJECT" && !proxy_names.contains(member.as_str()) {
-                return Err(format!(
-                    "Group '{}' refers to non-existent proxy '{}'",
-                    group.name, member
-                ));
-            }
-        }
+        validate_outbound_config(&rule.id, &rule.outbound)?;
     }
     Ok(())
 }

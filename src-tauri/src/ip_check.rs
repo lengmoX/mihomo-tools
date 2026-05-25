@@ -1,12 +1,12 @@
 use std::io::Read;
 use std::time::Duration;
-use crate::models::{CommandResult, IpCheckResult, IpInfoResponse, ListenerRule};
+use crate::models::{CommandResult, IpCheckResult, IpInfoResponse, ProxyRule};
 use crate::utils::{build_proxy_url, normalize_country_code, unix_timestamp_secs};
 
 pub const MAX_IPINFO_RESPONSE_BYTES: u64 = 16 * 1024;
 
-pub fn fetch_ip_info(rule: &ListenerRule) -> CommandResult<IpCheckResult> {
-    let proxy = reqwest::Proxy::all(build_proxy_url(&rule.listen, rule.port, &rule.inbound_type))
+pub fn fetch_ip_info(rule: &ProxyRule) -> CommandResult<IpCheckResult> {
+    let proxy = reqwest::Proxy::all(build_proxy_url(&rule.inbound.listen, rule.inbound.port, &rule.inbound.protocol))
         .map_err(|error| format!("Failed to configure rule proxy: {error}"))?;
     let client = reqwest::blocking::Client::builder()
         .proxy(proxy)

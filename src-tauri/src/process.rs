@@ -51,15 +51,26 @@ impl MihomoProcessManager {
         }
 
         let mut command = Command::new(binary_path);
-        let data_dir = config_path.parent().ok_or_else(|| "Failed to get config parent dir".to_string())?;
+        let data_dir = config_path.parent().ok_or_else(|| "Failed to get config parent dir".to_string())?.to_path_buf();
         command
             .arg("-d")
-            .arg(data_dir)
+            .arg(&data_dir)
             .arg("-f")
             .arg(config_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stdin(Stdio::null());
+
+        if let Ok(file) = std::fs::File::create(data_dir.join("mihomo.log")) {
+            if let Ok(err_file) = file.try_clone() {
+                command.stdout(Stdio::from(file));
+                command.stderr(Stdio::from(err_file));
+            } else {
+                command.stdout(Stdio::null());
+                command.stderr(Stdio::null());
+            }
+        } else {
+            command.stdout(Stdio::null());
+            command.stderr(Stdio::null());
+        }
 
         #[cfg(windows)]
         command.creation_flags(CREATE_NO_WINDOW);
