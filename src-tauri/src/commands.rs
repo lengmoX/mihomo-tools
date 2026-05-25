@@ -1,26 +1,19 @@
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 
 use crate::models::{
     AppState, ApplyRulesResult, CommandResult, NewRuleRequest, OutboundConfig,
     ParseOutboundUrlResult, PortAvailability, PortValidation, ProxyRule, RuntimePaths,
-    RuntimeStatus, UpdateRuleRequest, XrayBinaryValidation, XrayVersionInfo,
+    RuntimeStatus, UpdateRuleRequest, MihomoBinaryValidation, MihomoVersionInfo,
 };
-use crate::process::{read_xray_version, AppRuntimeState};
+use crate::process::{read_mihomo_version, AppRuntimeState};
 use crate::utils::{
     create_rule, duplicate_port_validation, ensure_data_dir, is_port_available, new_rule_id,
     read_app_state_from_disk, runtime_paths, write_app_state_to_disk,
-    write_generated_config_to_disk, DEFAULT_LISTEN_ADDRESS, XRAY_API_PORT,
+    write_generated_config_to_disk, DEFAULT_LISTEN_ADDRESS,
 };
 use crate::parser::parse_outbound_url_value;
-
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[tauri::command]
 pub fn load_app_state() -> CommandResult<AppState> {
@@ -48,15 +41,15 @@ pub fn save_and_apply_app_state(
 
     let status = if was_running {
         let paths = runtime_paths()?;
-        if !paths.xray_binary_path.is_file() {
+        if !paths.mihomo_binary_path.is_file() {
             return Err(format!(
-                "Xray binary was not found at {}",
-                paths.xray_binary_path.display()
+                "Mihomo binary was not found at {}",
+                paths.mihomo_binary_path.display()
             ));
         }
 
         manager.stop()?;
-        manager.start(paths.xray_binary_path, paths.generated_config_path)?
+        manager.start(paths.mihomo_binary_path, paths.generated_config_path)?
     } else {
         manager.status()?
     };
@@ -182,7 +175,7 @@ pub async fn check_rule_ip(
             .lock()
             .map_err(|_| "Failed to lock runtime process state".to_string())?;
         if !manager.status()?.running {
-            return Err("Start Xray before checking a rule IP".to_string());
+            return Err("Start Mihomo before checking a rule IP".to_string());
         }
     }
 
@@ -216,7 +209,7 @@ pub async fn check_rules_ip_batch(
             .lock()
             .map_err(|_| "Failed to lock runtime process state".to_string())?;
         if !manager.status()?.running {
-            return Err("Start Xray before checking rule IPs".to_string());
+            return Err("Start Mihomo before checking rule IPs".to_string());
         }
     }
 
@@ -282,7 +275,7 @@ pub fn parse_outbound_url(input: String) -> CommandResult<ParseOutboundUrlResult
 }
 
 #[tauri::command]
-pub fn generate_xray_config(state: Option<AppState>) -> CommandResult<Value> {
+pub fn generate_mihomo_config(state: Option<AppState>) -> CommandResult<Value> {
     let state = match state {
         Some(state) => state,
         None => read_app_state_from_disk()?,
@@ -293,7 +286,7 @@ pub fn generate_xray_config(state: Option<AppState>) -> CommandResult<Value> {
 }
 
 #[tauri::command]
-pub fn write_xray_config(state: Option<AppState>) -> CommandResult<PathBuf> {
+pub fn write_mihomo_config(state: Option<AppState>) -> CommandResult<PathBuf> {
     let state = match state {
         Some(state) => state,
         None => read_app_state_from_disk()?,
@@ -302,27 +295,27 @@ pub fn write_xray_config(state: Option<AppState>) -> CommandResult<PathBuf> {
 }
 
 #[tauri::command]
-pub fn validate_xray_binary() -> CommandResult<XrayBinaryValidation> {
+pub fn validate_mihomo_binary() -> CommandResult<MihomoBinaryValidation> {
     let paths = runtime_paths()?;
-    let exists = paths.xray_binary_path.exists();
-    let is_file = paths.xray_binary_path.is_file();
+    let exists = paths.mihomo_binary_path.exists();
+    let is_file = paths.mihomo_binary_path.is_file();
     let valid = exists && is_file;
     let message = if valid {
-        "Xray binary exists".to_string()
+        "Mihomo binary exists".to_string()
     } else if exists {
         format!(
-            "Xray binary path is not a file: {}",
-            paths.xray_binary_path.display()
+            "Mihomo binary path is not a file: {}",
+            paths.mihomo_binary_path.display()
         )
     } else {
         format!(
-            "Xray binary was not found at {}",
-            paths.xray_binary_path.display()
+            "Mihomo binary was not found at {}",
+            paths.mihomo_binary_path.display()
         )
     };
 
-    Ok(XrayBinaryValidation {
-        path: paths.xray_binary_path,
+    Ok(MihomoBinaryValidation {
+        path: paths.mihomo_binary_path,
         exists,
         is_file,
         valid,
@@ -331,17 +324,17 @@ pub fn validate_xray_binary() -> CommandResult<XrayBinaryValidation> {
 }
 
 #[tauri::command]
-pub fn get_xray_version() -> CommandResult<XrayVersionInfo> {
+pub fn get_mihomo_version() -> CommandResult<MihomoVersionInfo> {
     let paths = runtime_paths()?;
 
-    if !paths.xray_binary_path.is_file() {
+    if !paths.mihomo_binary_path.is_file() {
         return Err(format!(
-            "Xray binary was not found at {}",
-            paths.xray_binary_path.display()
+            "Mihomo binary was not found at {}",
+            paths.mihomo_binary_path.display()
         ));
     }
 
-    read_xray_version(&paths.xray_binary_path)
+    read_mihomo_version(&paths.mihomo_binary_path)
 }
 
 #[tauri::command]
@@ -376,14 +369,14 @@ pub fn get_runtime_status(
 }
 
 #[tauri::command]
-pub fn get_xray_status(
+pub fn get_mihomo_status(
     runtime_state: tauri::State<'_, AppRuntimeState>,
 ) -> CommandResult<RuntimeStatus> {
     get_runtime_status(runtime_state)
 }
 
 #[tauri::command]
-pub fn start_xray(runtime_state: tauri::State<'_, AppRuntimeState>) -> CommandResult<RuntimeStatus> {
+pub fn start_mihomo(runtime_state: tauri::State<'_, AppRuntimeState>) -> CommandResult<RuntimeStatus> {
     let state = read_app_state_from_disk()?;
     let port_validation = duplicate_port_validation(&state.rules);
     if !port_validation.valid {
@@ -391,10 +384,10 @@ pub fn start_xray(runtime_state: tauri::State<'_, AppRuntimeState>) -> CommandRe
     }
 
     let paths = ensure_data_dir()?;
-    if !paths.xray_binary_path.is_file() {
+    if !paths.mihomo_binary_path.is_file() {
         return Err(format!(
-            "Xray binary was not found at {}",
-            paths.xray_binary_path.display()
+            "Mihomo binary was not found at {}",
+            paths.mihomo_binary_path.display()
         ));
     }
 
@@ -404,11 +397,11 @@ pub fn start_xray(runtime_state: tauri::State<'_, AppRuntimeState>) -> CommandRe
         .process
         .lock()
         .map_err(|_| "Failed to lock runtime process state".to_string())?
-        .start(paths.xray_binary_path, paths.generated_config_path)
+        .start(paths.mihomo_binary_path, paths.generated_config_path)
 }
 
 #[tauri::command]
-pub fn stop_xray(runtime_state: tauri::State<'_, AppRuntimeState>) -> CommandResult<RuntimeStatus> {
+pub fn stop_mihomo(runtime_state: tauri::State<'_, AppRuntimeState>) -> CommandResult<RuntimeStatus> {
     runtime_state
         .process
         .lock()
@@ -417,7 +410,7 @@ pub fn stop_xray(runtime_state: tauri::State<'_, AppRuntimeState>) -> CommandRes
 }
 
 #[tauri::command]
-pub fn restart_xray(runtime_state: tauri::State<'_, AppRuntimeState>) -> CommandResult<RuntimeStatus> {
+pub fn restart_mihomo(runtime_state: tauri::State<'_, AppRuntimeState>) -> CommandResult<RuntimeStatus> {
     {
         let mut manager = runtime_state
             .process
@@ -425,53 +418,13 @@ pub fn restart_xray(runtime_state: tauri::State<'_, AppRuntimeState>) -> Command
             .map_err(|_| "Failed to lock runtime process state".to_string())?;
         manager.stop()?;
     }
-    start_xray(runtime_state)
+    start_mihomo(runtime_state)
 }
 
 #[tauri::command]
-pub fn query_xray_stats(
-    runtime_state: tauri::State<'_, AppRuntimeState>,
+pub fn query_mihomo_stats(
+    _runtime_state: tauri::State<'_, AppRuntimeState>,
 ) -> CommandResult<Value> {
-    {
-        let mut manager = runtime_state
-            .process
-            .lock()
-            .map_err(|_| "Failed to lock runtime process state".to_string())?;
-        if !manager.status()?.running {
-            return Ok(json!({ "stat": [] }));
-        }
-    }
-
-    let paths = runtime_paths()?;
-    if !paths.xray_binary_path.is_file() {
-        return Err("Xray binary was not found".to_string());
-    }
-
-    let mut command = Command::new(&paths.xray_binary_path);
-    command
-        .arg("api")
-        .arg("statsquery")
-        .arg(format!("--server=127.0.0.1:{XRAY_API_PORT}"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
-
-    let output = command
-        .output()
-        .map_err(|error| format!("Failed to execute Xray API command: {error}"))?;
-
-    if !output.status.success() {
-        // If the process is starting up or terminating, the loopback call might temporarily fail.
-        // Return an empty stats result gracefully to avoid breaking frontend UI.
-        return Ok(json!({ "stat": [] }));
-    }
-
-    let stdout_str = String::from_utf8_lossy(&output.stdout);
-    let parsed: Value = serde_json::from_str(&stdout_str)
-        .map_err(|error| format!("Failed to parse Stats JSON: {error}"))?;
-
-    Ok(parsed)
+    Ok(json!({ "stat": [] }))
 }
+

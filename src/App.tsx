@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useRef, type FormEvent, type ReactElement } from "react";
-import { backend, type AppState, type AuthConfig, type InboundProtocol, type OutboundConfig, type OutboundProtocol, type ProxyRule, type RuntimeStatus, type VlessFlow, type XrayBinaryValidation, type XrayVersionInfo } from "./api/backend";
+import { backend, type AppState, type AuthConfig, type InboundProtocol, type OutboundConfig, type OutboundProtocol, type ProxyRule, type RuntimeStatus, type VlessFlow, type MihomoBinaryValidation, type MihomoVersionInfo } from "./api/backend";
 import { RuntimeHero } from "./features/runtime/RuntimeHero";
 import type { StatusMeta } from "./features/runtime/runtime-types";
 import "./App.css";
@@ -738,8 +738,8 @@ function App() {
     return (saved === "light" || saved === "dark" || saved === "system") ? saved : "system";
   });
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>({ running: false, pid: null });
-  const [xrayValidation, setXrayValidation] = useState<XrayBinaryValidation | null>(null);
-  const [xrayVersion, setXrayVersion] = useState<XrayVersionInfo | null>(null);
+  const [mihomoValidation, setMihomoValidation] = useState<MihomoBinaryValidation | null>(null);
+  const [mihomoVersion, setMihomoVersion] = useState<MihomoVersionInfo | null>(null);
   const [selectedRuleIds, setSelectedRuleIds] = useState<string[]>([]);
   const [copiedKey, setCopiedKey] = useState<string>("");
   const [lastSavedAt, setLastSavedAt] = useState("尚未保存");
@@ -796,7 +796,7 @@ function App() {
           return;
         }
 
-        const res = await backend.queryXrayStats();
+        const res = await backend.queryMihomoStats();
         const now = Date.now();
         const currentStats: Record<string, { uplink: number; downlink: number }> = {};
 
@@ -839,7 +839,7 @@ function App() {
         }
         prevStatsRef.current = { timestamp: now, stats: currentStats };
       } catch (err) {
-        console.error("Failed to query Xray stats:", err);
+        console.error("Failed to query Mihomo stats:", err);
       } finally {
         isRequestPending = false;
       }
@@ -944,20 +944,20 @@ function App() {
 
       try {
         const [validation, state, status, version] = await Promise.all([
-          backend.validateXrayBinary(),
+          backend.validateMihomoBinary(),
           backend.loadAppState(),
           backend.getRuntimeStatus(),
-          backend.getXrayVersion().catch(() => null),
+          backend.getMihomoVersion().catch(() => null),
         ]);
 
         if (!shouldUpdate) {
           return;
         }
 
-        setXrayValidation(validation);
+        setMihomoValidation(validation);
         setAppState(state);
         setRuntimeStatus(status);
-        setXrayVersion(version);
+        setMihomoVersion(version);
         setLastSavedAt("已从磁盘载入");
       } catch (error) {
         if (shouldUpdate) {
@@ -994,10 +994,10 @@ function App() {
   }, [toastNotification]);
 
   useEffect(() => {
-    if (xrayValidation !== null && !xrayValidation.valid) {
-      showToast("warning", `${xrayValidation.message}。请将 Mihomo 核心放到：${xrayValidation.path}`);
+    if (mihomoValidation !== null && !mihomoValidation.valid) {
+      showToast("warning", `${mihomoValidation.message}。请将 Mihomo 核心放到：${mihomoValidation.path}`);
     }
-  }, [xrayValidation]);
+  }, [mihomoValidation]);
 
   const statusMeta = useMemo<StatusMeta>(() => {
     if (busyAction === "startup") {
@@ -1075,8 +1075,8 @@ function App() {
   }
 
   async function refreshRuntimeFacts() {
-    const [validation, status] = await Promise.all([backend.validateXrayBinary(), backend.getRuntimeStatus()]);
-    setXrayValidation(validation);
+    const [validation, status] = await Promise.all([backend.validateMihomoBinary(), backend.getRuntimeStatus()]);
+    setMihomoValidation(validation);
     setRuntimeStatus(status);
     return { validation, status };
   }
@@ -1177,8 +1177,8 @@ function App() {
       }
 
       if (action.name === "play") {
-        const validation = await backend.validateXrayBinary();
-        setXrayValidation(validation);
+        const validation = await backend.validateMihomoBinary();
+        setMihomoValidation(validation);
 
         if (!validation.valid) {
           throw new Error(validation.message);
@@ -1191,7 +1191,7 @@ function App() {
         }
 
         await backend.saveAppState(appState);
-        const status = await backend.startXray();
+        const status = await backend.startMihomo();
         setRuntimeStatus(status);
         setLastSavedAt(formatTime());
         setOperationMessage("Mihomo 已启动，当前磁盘状态已用于生成运行配置。");
@@ -1199,13 +1199,13 @@ function App() {
       }
 
       if (action.name === "stop") {
-        const status = await backend.stopXray();
+        const status = await backend.stopMihomo();
         setRuntimeStatus(status);
         setOperationMessage("Mihomo 已停止。");
         return;
       }
 
-      const status = await backend.restartXray();
+      const status = await backend.restartMihomo();
       setRuntimeStatus(status);
       setOperationMessage("Mihomo 已重启并重新读取已保存状态。");
     } catch (error) {
@@ -1716,7 +1716,7 @@ function App() {
         onAction={(action) => void handleRuntimeAction(action)}
         runtimeActions={runtimeActions}
         statusMeta={statusMeta}
-        versionInfo={xrayVersion}
+        versionInfo={mihomoVersion}
         theme={theme}
         onChangeTheme={handleThemeChange}
       />

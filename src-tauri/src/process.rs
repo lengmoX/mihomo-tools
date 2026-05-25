@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
-use crate::models::{CommandResult, RuntimeStatus, XrayVersionInfo};
+use crate::models::{CommandResult, RuntimeStatus, MihomoVersionInfo};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -10,11 +10,11 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Default)]
-pub struct XrayProcessManager {
+pub struct MihomoProcessManager {
     pub child: Option<Child>,
 }
 
-impl XrayProcessManager {
+impl MihomoProcessManager {
     pub fn status(&mut self) -> CommandResult<RuntimeStatus> {
         if let Some(child) = self.child.as_mut() {
             if child
@@ -47,13 +47,15 @@ impl XrayProcessManager {
         config_path: PathBuf,
     ) -> CommandResult<RuntimeStatus> {
         if self.status()?.running {
-            return Err("Xray is already running".to_string());
+            return Err("Mihomo is already running".to_string());
         }
 
         let mut command = Command::new(binary_path);
+        let data_dir = config_path.parent().ok_or_else(|| "Failed to get config parent dir".to_string())?;
         command
-            .arg("run")
-            .arg("-config")
+            .arg("-d")
+            .arg(data_dir)
+            .arg("-f")
             .arg(config_path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -64,7 +66,7 @@ impl XrayProcessManager {
 
         let child = command
             .spawn()
-            .map_err(|error| format!("Failed to start Xray: {error}"))?;
+            .map_err(|error| format!("Failed to start Mihomo: {error}"))?;
 
         let pid = child.id();
         self.child = Some(child);
@@ -84,7 +86,7 @@ impl XrayProcessManager {
             {
                 child
                     .kill()
-                    .map_err(|error| format!("Failed to stop Xray: {error}"))?;
+                    .map_err(|error| format!("Failed to stop Mihomo: {error}"))?;
                 let _ = child.wait();
             }
         }
@@ -97,39 +99,40 @@ impl XrayProcessManager {
 }
 
 pub struct AppRuntimeState {
-    pub process: Mutex<XrayProcessManager>,
+    pub process: Mutex<MihomoProcessManager>,
 }
 
 impl Default for AppRuntimeState {
     fn default() -> Self {
         Self {
-            process: Mutex::new(XrayProcessManager::default()),
+            process: Mutex::new(MihomoProcessManager::default()),
         }
     }
 }
 
-pub fn parse_xray_version(output_text: &str) -> CommandResult<XrayVersionInfo> {
+pub fn parse_mihomo_version(output_text: &str) -> CommandResult<MihomoVersionInfo> {
     let first_line = output_text
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
-        .ok_or_else(|| "Xray version output was empty".to_string())?;
+        .ok_or_else(|| "Mihomo version output was empty".to_string())?;
 
     let version = first_line
         .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| format!("Failed to parse Xray version from '{first_line}'"))?;
+        .find(|word| word.starts_with('v') && word.chars().nth(1).map_or(false, |c| c.is_ascii_digit()))
+        .map(|s| s.to_string())
+        .ok_or_else(|| format!("Failed to parse Mihomo version from '{first_line}'"))?;
 
-    Ok(XrayVersionInfo {
-        version: version.to_string(),
+    Ok(MihomoVersionInfo {
+        version,
         display_text: first_line.to_string(),
     })
 }
 
-pub fn read_xray_version(binary_path: &Path) -> CommandResult<XrayVersionInfo> {
+pub fn read_mihomo_version(binary_path: &Path) -> CommandResult<MihomoVersionInfo> {
     let mut command = Command::new(binary_path);
     command
-        .arg("version")
+        .arg("-v")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -139,7 +142,7 @@ pub fn read_xray_version(binary_path: &Path) -> CommandResult<XrayVersionInfo> {
 
     let output = command
         .output()
-        .map_err(|error| format!("Failed to read Xray version: {error}"))?;
+        .map_err(|error| format!("Failed to read Mihomo version: {error}"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -149,11 +152,11 @@ pub fn read_xray_version(binary_path: &Path) -> CommandResult<XrayVersionInfo> {
     if !output.status.success() {
         let detail = combined_output.trim();
         return Err(if detail.is_empty() {
-            format!("Xray version command exited with status {}", output.status)
+            format!("Mihomo version command exited with status {}", output.status)
         } else {
-            format!("Xray version command failed: {detail}")
+            format!("Mihomo version command failed: {detail}")
         });
     }
 
-    parse_xray_version(&combined_output)
+    parse_mihomo_version(&combined_output)
 }

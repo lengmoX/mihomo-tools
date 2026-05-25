@@ -39,19 +39,19 @@ pub fn run() {
             commands::parse_outbound_url,
             commands::parse_socks_outbound_url,
             commands::parse_socks_proxy_url,
-            commands::generate_xray_config,
-            commands::write_xray_config,
-            commands::validate_xray_binary,
-            commands::get_xray_version,
+            commands::generate_mihomo_config,
+            commands::write_mihomo_config,
+            commands::validate_mihomo_binary,
+            commands::get_mihomo_version,
             commands::check_port_available,
             commands::validate_rule_ports,
             commands::get_runtime_paths,
             commands::get_runtime_status,
-            commands::get_xray_status,
-            commands::start_xray,
-            commands::stop_xray,
-            commands::restart_xray,
-            commands::query_xray_stats
+            commands::get_mihomo_status,
+            commands::start_mihomo,
+            commands::stop_mihomo,
+            commands::restart_mihomo,
+            commands::query_mihomo_stats
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

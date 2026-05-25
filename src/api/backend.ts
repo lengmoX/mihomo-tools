@@ -167,10 +167,10 @@ export interface RuntimePaths {
   dataDir: string;
   appStatePath: string;
   generatedConfigPath: string;
-  xrayBinaryPath: string;
+  mihomoBinaryPath: string;
 }
 
-export interface XrayBinaryValidation {
+export interface MihomoBinaryValidation {
   path: string;
   exists: boolean;
   isFile: boolean;
@@ -178,7 +178,7 @@ export interface XrayBinaryValidation {
   message: string;
 }
 
-export interface XrayVersionInfo {
+export interface MihomoVersionInfo {
   version: string;
   displayText: string;
 }
@@ -203,13 +203,13 @@ export interface ApplyRulesResult {
   status: RuntimeStatus;
 }
 
-export interface XrayStatItem {
+export interface MihomoStatItem {
   name: string;
   value: number;
 }
 
-export interface XrayQueryStatsResult {
-  stat?: XrayStatItem[];
+export interface MihomoQueryStatsResult {
+  stat?: MihomoStatItem[];
 }
 
 export const backend = {
@@ -237,13 +237,13 @@ export const backend = {
 
   parseSocksOutboundUrl: (input: string) => invoke<OutboundConfig>("parse_socks_outbound_url", { input }),
 
-  generateXrayConfig: (state: AppState | null = null) => invoke<Record<string, unknown>>("generate_xray_config", { state }),
+  generateMihomoConfig: (state: AppState | null = null) => invoke<Record<string, unknown>>("generate_mihomo_config", { state }),
 
-  writeXrayConfig: (state: AppState | null = null) => invoke<string>("write_xray_config", { state }),
+  writeMihomoConfig: (state: AppState | null = null) => invoke<string>("write_mihomo_config", { state }),
 
-  validateXrayBinary: () => invoke<XrayBinaryValidation>("validate_xray_binary"),
+  validateMihomoBinary: () => invoke<MihomoBinaryValidation>("validate_mihomo_binary"),
 
-  getXrayVersion: () => invoke<XrayVersionInfo>("get_xray_version"),
+  getMihomoVersion: () => invoke<MihomoVersionInfo>("get_mihomo_version"),
 
   checkPortAvailable: (port: number, listen: string | null = null) =>
     invoke<PortAvailability>("check_port_available", { port, listen }),
@@ -254,11 +254,11 @@ export const backend = {
 
   getRuntimeStatus: () => invoke<RuntimeStatus>("get_runtime_status"),
 
-  startXray: () => invoke<RuntimeStatus>("start_xray"),
+  startMihomo: () => invoke<RuntimeStatus>("start_mihomo"),
 
-  stopXray: () => invoke<RuntimeStatus>("stop_xray"),
+  stopMihomo: () => invoke<RuntimeStatus>("stop_mihomo"),
 
-  restartXray: () => invoke<RuntimeStatus>("restart_xray"),
+  restartMihomo: () => invoke<RuntimeStatus>("restart_mihomo"),
 
-  queryXrayStats: () => invoke<XrayQueryStatsResult>("query_xray_stats"),
+  queryMihomoStats: () => invoke<MihomoQueryStatsResult>("query_mihomo_stats"),
 };

@@ -26,7 +26,7 @@ pub fn runtime_paths() -> CommandResult<RuntimePaths> {
     Ok(RuntimePaths {
         app_state_path: data_dir.join(STATE_FILE_NAME),
         generated_config_path: data_dir.join(GENERATED_CONFIG_FILE_NAME),
-        xray_binary_path: runtime_root.join("xray").join("xray.exe"),
+        mihomo_binary_path: runtime_root.join("mihomo").join("mihomo.exe"),
         runtime_root,
         data_dir,
     })

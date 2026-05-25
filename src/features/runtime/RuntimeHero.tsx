@@ -1,4 +1,4 @@
-import type { XrayVersionInfo } from "../../api/backend";
+import type { MihomoVersionInfo } from "../../api/backend";
 import { Icon } from "./RuntimeIcon";
 import type { RuntimeAction, StatusMeta } from "./runtime-types";
 
@@ -7,7 +7,7 @@ type RuntimeHeroProps = {
   onAction: (action: RuntimeAction) => void;
   runtimeActions: RuntimeAction[];
   statusMeta: StatusMeta;
-  versionInfo: XrayVersionInfo | null;
+  versionInfo: MihomoVersionInfo | null;
   theme: "system" | "light" | "dark";
   onChangeTheme: (nextTheme: "system" | "light" | "dark") => void;
 };
