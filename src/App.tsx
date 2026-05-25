@@ -1,23 +1,39 @@
-import { useEffect, useMemo, useState, useRef, type FormEvent, type ReactElement } from "react";
-import { backend, type AppState, type AuthConfig, type InboundProtocol, type OutboundConfig, type OutboundProtocol, type ProxyRule, type RuntimeStatus, type VlessFlow, type MihomoBinaryValidation, type MihomoVersionInfo } from "./api/backend";
+import { useEffect, useMemo, useState, type FormEvent, type ReactElement } from "react";
+import {
+  backend, type AppState, type AuthConfig, type OutboundConfig,
+  type OutboundProtocol, type ListenerRule, type ProxyNode, type ProxyGroup,
+  type RuntimeStatus, type VlessFlow, type MihomoBinaryValidation, type MihomoVersionInfo,
+  type ProxyDeletionAnalysis, type ProxyGroupDeletionAnalysis
+} from "./api/backend";
 import { RuntimeHero } from "./features/runtime/RuntimeHero";
 import type { StatusMeta } from "./features/runtime/runtime-types";
 import "./App.css";
 
+type TabName = "rules" | "groups" | "proxies";
+
 type RuleFormState = {
-  remark: string;
+  name: string;
+  listen: string;
+  port: string;
+  inboundType: string;
+  groupId: string;
   enabled: boolean;
-  inboundProtocol: InboundProtocol;
-  inboundListen: string;
-  inboundPort: string;
-  inboundUsername: string;
-  inboundPassword: string;
-  outboundProtocol: OutboundProtocol;
+};
+
+type GroupFormState = {
+  name: string;
+  groupType: string;
+  proxies: string[];
+};
+
+type NodeFormState = {
+  name: string;
+  protocol: OutboundProtocol;
   outboundProxyUrl: string;
-  outboundHost: string;
-  outboundPort: string;
-  outboundUsername: string;
-  outboundPassword: string;
+  address: string;
+  port: string;
+  socksUsername: string;
+  socksPassword: string;
   vlessId: string;
   vlessEncryption: string;
   vlessFlow: "" | VlessFlow;
@@ -56,22 +72,21 @@ type ModalMode = "create" | "edit";
 
 type RuleModalState = {
   mode: ModalMode;
-  editingRuleId: string | null;
-  inboundAuthExpanded: boolean;
+  editingId: string | null;
   draft: RuleFormState;
 };
 
-type DeleteConfirmation =
-  | {
-    mode: "single";
-    ruleId: string;
-    remark: string;
-  }
-  | {
-    mode: "bulk";
-    ruleIds: string[];
-    count: number;
-  };
+type GroupModalState = {
+  mode: ModalMode;
+  editingId: string | null;
+  draft: GroupFormState;
+};
+
+type NodeModalState = {
+  mode: ModalMode;
+  editingId: string | null;
+  draft: NodeFormState;
+};
 
 type IconName =
   | "play"
@@ -108,11 +123,18 @@ type ToastNotification = {
 };
 
 const emptyAppState: AppState = {
-  schemaVersion: 2,
+  schemaVersion: 3,
+  proxies: [],
+  groups: [],
   rules: [],
 };
 
-const inboundProtocolOptions: InboundProtocol[] = ["socks", "http"];
+const inboundTypeOptions = [
+  { value: "mixed", label: "Mixed (SOCKS + HTTP)" },
+  { value: "socks", label: "SOCKS5" },
+  { value: "http", label: "HTTP" },
+];
+
 const outboundProtocolOptions: OutboundProtocol[] = ["socks", "vless", "shadowsocks", "trojan"];
 const vlessFlowOptions: VlessFlow[] = ["xtls-rprx-vision", "xtls-rprx-vision-udp443"];
 const minAutoInboundPort = 50_000;
@@ -130,44 +152,7 @@ const shadowsocksMethodOptions = [
   "xchacha20-ietf-poly1305",
 ] as const;
 
-const outboundConfigFieldNames: Array<keyof RuleFormState> = [
-  "outboundProtocol",
-  "outboundHost",
-  "outboundPort",
-  "outboundUsername",
-  "outboundPassword",
-  "vlessId",
-  "vlessEncryption",
-  "vlessFlow",
-  "vlessLevel",
-  "vlessSecurity",
-  "vlessServerName",
-  "vlessFingerprint",
-  "vlessRealityPublicKey",
-  "vlessRealityShortId",
-  "vlessRealitySpiderX",
-  "vlessAllowInsecure",
-  "vlessTransportKind",
-  "vlessTransportPath",
-  "vlessTransportHost",
-  "shadowsocksMethod",
-  "shadowsocksPassword",
-  "shadowsocksUot",
-  "shadowsocksUotVersion",
-  "trojanPassword",
-  "trojanEmail",
-  "trojanLevel",
-  "trojanSecurity",
-  "trojanServerName",
-  "trojanFingerprint",
-  "trojanRealityPublicKey",
-  "trojanRealityShortId",
-  "trojanRealitySpiderX",
-  "trojanAllowInsecure",
-  "trojanTransportKind",
-  "trojanTransportPath",
-  "trojanTransportHost",
-];
+
 
 const runtimeActions: RuntimeAction[] = [
   { name: "play", label: "启动 Mihomo", title: "启动" },
@@ -209,13 +194,10 @@ function formatTime() {
   return new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 }
 
-function formatInboundProtocol(protocol: InboundProtocol) {
-  return protocol === "socks" ? "SOCKS5" : "HTTP";
-}
+
 
 function formatLocalInboundAddress(listen: string, port: number) {
   const shortListen = listen === "127.0.0.1" ? "127" : listen === "0.0.0.0" ? "0" : listen;
-
   return `${shortListen}:${port}`;
 }
 
@@ -225,18 +207,9 @@ function randomAutoInboundPort() {
 }
 
 function formatOutboundProtocol(protocol: OutboundProtocol) {
-  if (protocol === "socks") {
-    return "SOCKS5";
-  }
-
-  if (protocol === "vless") {
-    return "VLESS";
-  }
-
-  if (protocol === "trojan") {
-    return "Trojan";
-  }
-
+  if (protocol === "socks") return "SOCKS5";
+  if (protocol === "vless") return "VLESS";
+  if (protocol === "trojan") return "Trojan";
   return "Shadowsocks";
 }
 
@@ -244,15 +217,10 @@ function getOutboundAddress(outbound: OutboundConfig) {
   return outbound.protocol === "socks" ? `${outbound.host}:${outbound.port}` : `${outbound.address}:${outbound.port}`;
 }
 
-function getOutboundImportWarnings(outbound: OutboundConfig) {
-  return outbound.protocol === "socks" ? [] : outbound.importSource?.warnings ?? [];
-}
-
 function formatCountryFlag(country: string | null) {
   if (country === null || !/^[A-Za-z]{2}$/.test(country)) {
     return "--";
   }
-
   return country
     .toUpperCase()
     .split("")
@@ -260,76 +228,64 @@ function formatCountryFlag(country: string | null) {
     .join("");
 }
 
-function toRuleDraft(rule: ProxyRule): RuleFormState {
-  const outboundAddress = rule.outbound.protocol === "socks" ? rule.outbound.host : rule.outbound.address;
-  const socksAuth = rule.outbound.protocol === "socks" ? rule.outbound.auth : null;
-  const vlessSecurity = rule.outbound.protocol === "vless" && rule.outbound.reality !== null ? "reality" : rule.outbound.protocol === "vless" && rule.outbound.tls !== null ? "tls" : "none";
-  const trojanSecurity = rule.outbound.protocol === "trojan" && rule.outbound.reality !== null ? "reality" : rule.outbound.protocol === "trojan" && rule.outbound.tls !== null ? "tls" : "none";
+function toNodeDraft(node: ProxyNode): NodeFormState {
+  const address = node.config.protocol === "socks" ? node.config.host : node.config.address;
+  const socksAuth = node.config.protocol === "socks" ? node.config.auth : null;
+  const vlessSecurity = node.config.protocol === "vless" && node.config.reality !== null ? "reality" : node.config.protocol === "vless" && node.config.tls !== null ? "tls" : "none";
+  const trojanSecurity = node.config.protocol === "trojan" && node.config.reality !== null ? "reality" : node.config.protocol === "trojan" && node.config.tls !== null ? "tls" : "none";
 
   return {
-    remark: rule.remark,
-    enabled: rule.enabled,
-    inboundProtocol: rule.inbound.protocol,
-    inboundListen: rule.inbound.listen,
-    inboundPort: String(rule.inbound.port),
-    inboundUsername: rule.inbound.auth?.username ?? "",
-    inboundPassword: rule.inbound.auth?.password ?? "",
-    outboundProtocol: rule.outbound.protocol,
+    name: node.name,
+    protocol: node.config.protocol,
     outboundProxyUrl: "",
-    outboundHost: outboundAddress,
-    outboundPort: String(rule.outbound.port),
-    outboundUsername: socksAuth?.username ?? "",
-    outboundPassword: socksAuth?.password ?? "",
-    vlessId: rule.outbound.protocol === "vless" ? rule.outbound.id : "",
-    vlessEncryption: rule.outbound.protocol === "vless" ? rule.outbound.encryption : "none",
-    vlessFlow: rule.outbound.protocol === "vless" ? rule.outbound.flow ?? "" : "",
-    vlessLevel: rule.outbound.protocol === "vless" ? String(rule.outbound.level ?? "") : "",
+    address,
+    port: String(node.config.port),
+    socksUsername: socksAuth?.username ?? "",
+    socksPassword: socksAuth?.password ?? "",
+    vlessId: node.config.protocol === "vless" ? node.config.id : "",
+    vlessEncryption: node.config.protocol === "vless" ? node.config.encryption : "none",
+    vlessFlow: node.config.protocol === "vless" ? node.config.flow ?? "" : "",
+    vlessLevel: node.config.protocol === "vless" ? String(node.config.level ?? "") : "",
     vlessSecurity,
-    vlessServerName: rule.outbound.protocol === "vless" ? rule.outbound.reality?.serverName ?? rule.outbound.tls?.serverName ?? "" : "",
-    vlessFingerprint: rule.outbound.protocol === "vless" ? rule.outbound.reality?.fingerprint ?? rule.outbound.tls?.fingerprint ?? "" : "",
-    vlessRealityPublicKey: rule.outbound.protocol === "vless" ? rule.outbound.reality?.publicKey ?? "" : "",
-    vlessRealityShortId: rule.outbound.protocol === "vless" ? rule.outbound.reality?.shortId ?? "" : "",
-    vlessRealitySpiderX: rule.outbound.protocol === "vless" ? rule.outbound.reality?.spiderX ?? "" : "",
-    vlessAllowInsecure: rule.outbound.protocol === "vless" ? !!rule.outbound.tls?.allowInsecure : false,
-    vlessTransportKind: rule.outbound.protocol === "vless" ? rule.outbound.transport.kind : "tcp",
-    vlessTransportPath: rule.outbound.protocol === "vless" ? rule.outbound.transport.path ?? "" : "",
-    vlessTransportHost: rule.outbound.protocol === "vless" ? rule.outbound.transport.host ?? "" : "",
-    shadowsocksMethod: rule.outbound.protocol === "shadowsocks" ? rule.outbound.method : shadowsocksMethodOptions[0],
-    shadowsocksPassword: rule.outbound.protocol === "shadowsocks" ? rule.outbound.password : "",
-    shadowsocksUot: rule.outbound.protocol === "shadowsocks" ? rule.outbound.uot : false,
-    shadowsocksUotVersion: rule.outbound.protocol === "shadowsocks" ? String(rule.outbound.uotVersion ?? "") as "" | "1" | "2" : "",
-    trojanPassword: rule.outbound.protocol === "trojan" ? rule.outbound.password : "",
-    trojanEmail: rule.outbound.protocol === "trojan" ? rule.outbound.email ?? "" : "",
-    trojanLevel: rule.outbound.protocol === "trojan" ? String(rule.outbound.level ?? "") : "",
+    vlessServerName: node.config.protocol === "vless" ? node.config.reality?.serverName ?? node.config.tls?.serverName ?? "" : "",
+    vlessFingerprint: node.config.protocol === "vless" ? node.config.reality?.fingerprint ?? node.config.tls?.fingerprint ?? "" : "",
+    vlessRealityPublicKey: node.config.protocol === "vless" ? node.config.reality?.publicKey ?? "" : "",
+    vlessRealityShortId: node.config.protocol === "vless" ? node.config.reality?.shortId ?? "" : "",
+    vlessRealitySpiderX: node.config.protocol === "vless" ? node.config.reality?.spiderX ?? "" : "",
+    vlessAllowInsecure: node.config.protocol === "vless" ? !!node.config.tls?.allowInsecure : false,
+    vlessTransportKind: node.config.protocol === "vless" ? node.config.transport.kind : "tcp",
+    vlessTransportPath: node.config.protocol === "vless" ? node.config.transport.path ?? "" : "",
+    vlessTransportHost: node.config.protocol === "vless" ? node.config.transport.host ?? "" : "",
+    shadowsocksMethod: node.config.protocol === "shadowsocks" ? node.config.method : shadowsocksMethodOptions[0],
+    shadowsocksPassword: node.config.protocol === "shadowsocks" ? node.config.password : "",
+    shadowsocksUot: node.config.protocol === "shadowsocks" ? node.config.uot : false,
+    shadowsocksUotVersion: node.config.protocol === "shadowsocks" ? String(node.config.uotVersion ?? "") as "" | "1" | "2" : "",
+    trojanPassword: node.config.protocol === "trojan" ? node.config.password : "",
+    trojanEmail: node.config.protocol === "trojan" ? node.config.email ?? "" : "",
+    trojanLevel: node.config.protocol === "trojan" ? String(node.config.level ?? "") : "",
     trojanSecurity,
-    trojanServerName: rule.outbound.protocol === "trojan" ? rule.outbound.reality?.serverName ?? rule.outbound.tls?.serverName ?? "" : "",
-    trojanFingerprint: rule.outbound.protocol === "trojan" ? rule.outbound.reality?.fingerprint ?? rule.outbound.tls?.fingerprint ?? "" : "",
-    trojanRealityPublicKey: rule.outbound.protocol === "trojan" ? rule.outbound.reality?.publicKey ?? "" : "",
-    trojanRealityShortId: rule.outbound.protocol === "trojan" ? rule.outbound.reality?.shortId ?? "" : "",
-    trojanRealitySpiderX: rule.outbound.protocol === "trojan" ? rule.outbound.reality?.spiderX ?? "" : "",
-    trojanAllowInsecure: rule.outbound.protocol === "trojan" ? !!rule.outbound.tls?.allowInsecure : false,
-    trojanTransportKind: rule.outbound.protocol === "trojan" ? rule.outbound.transport.kind : "tcp",
-    trojanTransportPath: rule.outbound.protocol === "trojan" ? rule.outbound.transport.path ?? "" : "",
-    trojanTransportHost: rule.outbound.protocol === "trojan" ? rule.outbound.transport.host ?? "" : "",
-    importedOutbound: rule.outbound.protocol === "socks" ? null : rule.outbound,
+    trojanServerName: node.config.protocol === "trojan" ? node.config.reality?.serverName ?? node.config.tls?.serverName ?? "" : "",
+    trojanFingerprint: node.config.protocol === "trojan" ? node.config.reality?.fingerprint ?? node.config.tls?.fingerprint ?? "" : "",
+    trojanRealityPublicKey: node.config.protocol === "trojan" ? node.config.reality?.publicKey ?? "" : "",
+    trojanRealityShortId: node.config.protocol === "trojan" ? node.config.reality?.shortId ?? "" : "",
+    trojanRealitySpiderX: node.config.protocol === "trojan" ? node.config.reality?.spiderX ?? "" : "",
+    trojanAllowInsecure: node.config.protocol === "trojan" ? !!node.config.tls?.allowInsecure : false,
+    trojanTransportKind: node.config.protocol === "trojan" ? node.config.transport.kind : "tcp",
+    trojanTransportPath: node.config.protocol === "trojan" ? node.config.transport.path ?? "" : "",
+    trojanTransportHost: node.config.protocol === "trojan" ? node.config.transport.host ?? "" : "",
+    importedOutbound: node.config.protocol === "socks" ? null : node.config,
   };
 }
 
-function createEmptyRuleDraft(nextIndex: number): RuleFormState {
+function createEmptyNodeDraft(nextIndex: number): NodeFormState {
   return {
-    remark: `新建规则 ${nextIndex}`,
-    enabled: true,
-    inboundProtocol: "socks",
-    inboundListen: "127.0.0.1",
-    inboundPort: "",
-    inboundUsername: "",
-    inboundPassword: "",
-    outboundProtocol: "socks",
+    name: `节点-${nextIndex}`,
+    protocol: "socks",
     outboundProxyUrl: "",
-    outboundHost: "",
-    outboundPort: "1080",
-    outboundUsername: "",
-    outboundPassword: "",
+    address: "",
+    port: "1080",
+    socksUsername: "",
+    socksPassword: "",
     vlessId: "",
     vlessEncryption: "none",
     vlessFlow: "",
@@ -367,57 +323,44 @@ function createEmptyRuleDraft(nextIndex: number): RuleFormState {
 
 function parsePort(portValue: string) {
   const port = Number(portValue);
-
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     return null;
   }
-
   return port;
 }
 
-function parseOptionalPort(portValue: string) {
-  return portValue.trim() === "" ? null : parsePort(portValue);
-}
+
 
 function parseOptionalNonNegativeInteger(value: string) {
   if (value.trim() === "") {
     return null;
   }
-
   const numberValue = Number(value);
   return Number.isInteger(numberValue) && numberValue >= 0 ? numberValue : Number.NaN;
 }
 
 function buildAuthConfig(username: string, password: string): AuthConfig | null {
   const trimmedUsername = username.trim();
-
   if (trimmedUsername === "" && password === "") {
     return null;
   }
-
   if (trimmedUsername === "" || password === "") {
     return null;
   }
-
-  return {
-    username: trimmedUsername,
-    password,
-  };
+  return { username: trimmedUsername, password };
 }
 
-function hasPartialAuth(username: string, password: string) {
-  return (username.trim() === "") !== (password === "");
-}
 
-function buildOutboundFromDraft(draft: RuleFormState): OutboundConfig | null {
-  const outboundPort = parsePort(draft.outboundPort);
+
+function buildOutboundFromDraft(draft: NodeFormState): OutboundConfig | null {
+  const port = parsePort(draft.port);
   const vlessLevel = parseOptionalNonNegativeInteger(draft.vlessLevel);
 
-  if (outboundPort === null || Number.isNaN(vlessLevel)) {
+  if (port === null || Number.isNaN(vlessLevel)) {
     return null;
   }
 
-  if (draft.outboundProtocol === "vless") {
+  if (draft.protocol === "vless") {
     const tlsFields = {
       serverName: draft.vlessServerName.trim() === "" ? null : draft.vlessServerName.trim(),
       fingerprint: draft.vlessFingerprint.trim() === "" ? null : draft.vlessFingerprint.trim(),
@@ -430,8 +373,8 @@ function buildOutboundFromDraft(draft: RuleFormState): OutboundConfig | null {
 
     return {
       protocol: "vless",
-      address: draft.outboundHost.trim(),
-      port: outboundPort,
+      address: draft.address.trim(),
+      port,
       id: draft.vlessId.trim(),
       encryption: draft.vlessEncryption.trim(),
       flow: draft.vlessFlow === "" ? null : draft.vlessFlow,
@@ -445,21 +388,21 @@ function buildOutboundFromDraft(draft: RuleFormState): OutboundConfig | null {
       reality:
         draft.vlessSecurity === "reality"
           ? {
-            ...securityFields,
-            publicKey: draft.vlessRealityPublicKey.trim(),
-            shortId: draft.vlessRealityShortId.trim() === "" ? null : draft.vlessRealityShortId.trim(),
-            spiderX: draft.vlessRealitySpiderX.trim() === "" ? null : draft.vlessRealitySpiderX.trim(),
-          }
+              ...securityFields,
+              publicKey: draft.vlessRealityPublicKey.trim(),
+              shortId: draft.vlessRealityShortId.trim() === "" ? null : draft.vlessRealityShortId.trim(),
+              spiderX: draft.vlessRealitySpiderX.trim() === "" ? null : draft.vlessRealitySpiderX.trim(),
+            }
           : null,
       importSource: draft.importedOutbound?.protocol === "vless" ? draft.importedOutbound.importSource : null,
     };
   }
 
-  if (draft.outboundProtocol === "shadowsocks") {
+  if (draft.protocol === "shadowsocks") {
     return {
       protocol: "shadowsocks",
-      address: draft.outboundHost.trim(),
-      port: outboundPort,
+      address: draft.address.trim(),
+      port,
       method: draft.shadowsocksMethod.trim(),
       password: draft.shadowsocksPassword,
       uot: draft.shadowsocksUot,
@@ -468,7 +411,7 @@ function buildOutboundFromDraft(draft: RuleFormState): OutboundConfig | null {
     };
   }
 
-  if (draft.outboundProtocol === "trojan") {
+  if (draft.protocol === "trojan") {
     const tlsFields = {
       serverName: draft.trojanServerName.trim() === "" ? null : draft.trojanServerName.trim(),
       fingerprint: draft.trojanFingerprint.trim() === "" ? null : draft.trojanFingerprint.trim(),
@@ -482,8 +425,8 @@ function buildOutboundFromDraft(draft: RuleFormState): OutboundConfig | null {
 
     return {
       protocol: "trojan",
-      address: draft.outboundHost.trim(),
-      port: outboundPort,
+      address: draft.address.trim(),
+      port,
       password: draft.trojanPassword,
       email: draft.trojanEmail.trim() === "" ? null : draft.trojanEmail.trim(),
       level: Number.isNaN(trojanLevel) ? null : trojanLevel,
@@ -496,11 +439,11 @@ function buildOutboundFromDraft(draft: RuleFormState): OutboundConfig | null {
       reality:
         draft.trojanSecurity === "reality"
           ? {
-            ...securityFields,
-            publicKey: draft.trojanRealityPublicKey.trim(),
-            shortId: draft.trojanRealityShortId.trim() === "" ? null : draft.trojanRealityShortId.trim(),
-            spiderX: draft.trojanRealitySpiderX.trim() === "" ? null : draft.trojanRealitySpiderX.trim(),
-          }
+              ...securityFields,
+              publicKey: draft.trojanRealityPublicKey.trim(),
+              shortId: draft.trojanRealityShortId.trim() === "" ? null : draft.trojanRealityShortId.trim(),
+              spiderX: draft.trojanRealitySpiderX.trim() === "" ? null : draft.trojanRealitySpiderX.trim(),
+            }
           : null,
       importSource: draft.importedOutbound?.protocol === "trojan" ? draft.importedOutbound.importSource : null,
     };
@@ -508,55 +451,31 @@ function buildOutboundFromDraft(draft: RuleFormState): OutboundConfig | null {
 
   return {
     protocol: "socks",
-    host: draft.outboundHost.trim(),
-    port: outboundPort,
-    auth: buildAuthConfig(draft.outboundUsername, draft.outboundPassword),
+    host: draft.address.trim(),
+    port,
+    auth: buildAuthConfig(draft.socksUsername, draft.socksPassword),
   };
 }
 
-function buildRuleFromDraft(id: string, draft: RuleFormState): ProxyRule | null {
-  const inboundPort = parsePort(draft.inboundPort);
-  const outbound = buildOutboundFromDraft(draft);
-
-  if (inboundPort === null || outbound === null) {
-    return null;
-  }
-
-  return {
-    id,
-    remark: draft.remark.trim(),
-    enabled: draft.enabled,
-    inbound: {
-      protocol: draft.inboundProtocol,
-      listen: draft.inboundListen.trim(),
-      port: inboundPort,
-      auth: buildAuthConfig(draft.inboundUsername, draft.inboundPassword),
-    },
-    outbound,
-    ipCheck: null,
-  };
-}
-
-function applyOutboundToDraft(draft: RuleFormState, outbound: OutboundConfig): RuleFormState {
-  const nextDraft: RuleFormState = {
+function applyOutboundToDraft(draft: NodeFormState, outbound: OutboundConfig): NodeFormState {
+  const nextDraft: NodeFormState = {
     ...draft,
-    outboundProtocol: outbound.protocol,
-    outboundHost: outbound.protocol === "socks" ? outbound.host : outbound.address,
-    outboundPort: String(outbound.port),
+    protocol: outbound.protocol,
+    address: outbound.protocol === "socks" ? outbound.host : outbound.address,
+    port: String(outbound.port),
     importedOutbound: outbound.protocol === "socks" ? null : outbound,
   };
 
   if (outbound.protocol === "socks") {
     return {
       ...nextDraft,
-      outboundUsername: outbound.auth?.username ?? "",
-      outboundPassword: outbound.auth?.password ?? "",
+      socksUsername: outbound.auth?.username ?? "",
+      socksPassword: outbound.auth?.password ?? "",
     };
   }
 
   if (outbound.protocol === "vless") {
     const security = outbound.reality !== null ? "reality" : outbound.tls !== null ? "tls" : "none";
-
     return {
       ...nextDraft,
       vlessId: outbound.id,
@@ -578,7 +497,6 @@ function applyOutboundToDraft(draft: RuleFormState, outbound: OutboundConfig): R
 
   if (outbound.protocol === "trojan") {
     const security = outbound.reality !== null ? "reality" : outbound.tls !== null ? "tls" : "none";
-
     return {
       ...nextDraft,
       trojanPassword: outbound.password,
@@ -606,263 +524,91 @@ function applyOutboundToDraft(draft: RuleFormState, outbound: OutboundConfig): R
   };
 }
 
-function isInboundProtocol(value: string): value is InboundProtocol {
-  return inboundProtocolOptions.some((protocol) => protocol === value);
-}
-
 function isOutboundProtocol(value: string): value is OutboundProtocol {
   return outboundProtocolOptions.some((protocol) => protocol === value);
 }
 
-function buildInboundProxyUrl(rule: ProxyRule) {
-  const scheme = rule.inbound.protocol === "socks" ? "socks5" : "http";
-  const username = rule.inbound.auth?.username ?? "";
-  const password = rule.inbound.auth?.password ?? "";
-  const credentials = username !== "" || password !== "" ? `${encodeURIComponent(username)}:${encodeURIComponent(password)}@` : "";
-
-  return `${scheme}://${credentials}${rule.inbound.listen}:${rule.inbound.port}`;
+function buildInboundProxyUrl(rule: ListenerRule) {
+  const scheme = rule.inboundType === "socks" ? "socks5" : "http";
+  return `${scheme}://${rule.listen}:${rule.port}`;
 }
 
-type OutboundDraftCopyState =
-  | {
-    disabled: false;
-    title: string;
-    url: string;
-  }
-  | {
-    disabled: true;
-    title: string;
-    url: "";
-  };
 
-function isStraightforwardUrlHost(host: string) {
-  return host !== "" && !/[\s/?#@]/.test(host);
-}
-
-function buildSocksOutboundDraftCopyState(draft: RuleFormState): OutboundDraftCopyState {
-  const host = draft.outboundHost.trim();
-  const port = parsePort(draft.outboundPort);
-
-  if (!isStraightforwardUrlHost(host) || port === null) {
-    return { disabled: true, title: "请填写有效的上游主机和端口后复制", url: "" };
-  }
-
-  if (hasPartialAuth(draft.outboundUsername, draft.outboundPassword)) {
-    return { disabled: true, title: "用户名和密码需同时填写后复制", url: "" };
-  }
-
-  const auth = buildAuthConfig(draft.outboundUsername, draft.outboundPassword);
-  const credentials = auth === null ? "" : `${encodeURIComponent(auth.username)}:${encodeURIComponent(auth.password)}@`;
-
-  return { disabled: false, title: "复制上游出口代理链接", url: `socks5://${credentials}${host}:${port}` };
-}
-
-function buildVlessOutboundDraftCopyState(draft: RuleFormState): OutboundDraftCopyState {
-  const rawUrl = draft.importedOutbound?.protocol === "vless" ? draft.importedOutbound.importSource?.rawUrl.trim() ?? "" : "";
-
-  if (rawUrl !== "") {
-    return { disabled: false, title: "复制导入的 VLESS 链接", url: rawUrl };
-  }
-
-  return { disabled: true, title: "当前协议暂不能生成链接，请从代理链接导入后复制", url: "" };
-}
-
-function buildShadowsocksOutboundDraftCopyState(draft: RuleFormState): OutboundDraftCopyState {
-  const rawUrl = draft.importedOutbound?.protocol === "shadowsocks" ? draft.importedOutbound.importSource?.rawUrl.trim() ?? "" : "";
-
-  if (rawUrl !== "") {
-    return { disabled: false, title: "复制导入的 Shadowsocks 链接", url: rawUrl };
-  }
-
-  return { disabled: true, title: "当前协议暂不能生成链接，请从代理链接导入后复制", url: "" };
-}
-
-function buildTrojanOutboundDraftCopyState(draft: RuleFormState): OutboundDraftCopyState {
-  const rawUrl = draft.importedOutbound?.protocol === "trojan" ? draft.importedOutbound.importSource?.rawUrl.trim() ?? "" : "";
-
-  if (rawUrl !== "") {
-    return { disabled: false, title: "复制导入的 Trojan 链接", url: rawUrl };
-  }
-
-  return { disabled: true, title: "当前协议暂不能生成链接，请从代理链接导入后复制", url: "" };
-}
-
-function getOutboundDraftCopyState(draft: RuleFormState): OutboundDraftCopyState {
-  if (draft.outboundProtocol === "socks") {
-    return buildSocksOutboundDraftCopyState(draft);
-  }
-
-  if (draft.outboundProtocol === "vless") {
-    return buildVlessOutboundDraftCopyState(draft);
-  }
-
-  if (draft.outboundProtocol === "trojan") {
-    return buildTrojanOutboundDraftCopyState(draft);
-  }
-
-  return buildShadowsocksOutboundDraftCopyState(draft);
-}
-
-function formatSpeed(bytesPerSec: number): string {
-  if (bytesPerSec < 1024) {
-    return `${bytesPerSec} B/s`;
-  }
-  const kbps = bytesPerSec / 1024;
-  if (kbps < 1024) {
-    return `${kbps.toFixed(1)} KB/s`;
-  }
-  const mbps = kbps / 1024;
-  return `${mbps.toFixed(1)} MB/s`;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) {
-    return `${bytes} B`;
-  }
-  const kb = bytes / 1024;
-  if (kb < 1024) {
-    return `${kb.toFixed(1)} KB`;
-  }
-  const mb = kb / 1024;
-  if (mb < 1024) {
-    return `${mb.toFixed(1)} MB`;
-  }
-  const gb = mb / 1024;
-  return `${gb.toFixed(1)} GB`;
-}
 
 function App() {
   const [appState, setAppState] = useState<AppState>(emptyAppState);
   const [theme, setTheme] = useState<"system" | "light" | "dark">(() => {
-    const saved = localStorage.getItem("xray-tools-theme");
+    const saved = localStorage.getItem("mihomo-tools-theme");
     return (saved === "light" || saved === "dark" || saved === "system") ? saved : "system";
   });
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>({ running: false, pid: null });
   const [mihomoValidation, setMihomoValidation] = useState<MihomoBinaryValidation | null>(null);
   const [mihomoVersion, setMihomoVersion] = useState<MihomoVersionInfo | null>(null);
+  const [activeTab, setActiveTab] = useState<TabName>("rules");
+
   const [selectedRuleIds, setSelectedRuleIds] = useState<string[]>([]);
   const [copiedKey, setCopiedKey] = useState<string>("");
   const [lastSavedAt, setLastSavedAt] = useState("尚未保存");
-  const [ruleModal, setRuleModal] = useState<RuleModalState | null>(null);
-  const [deleteConfirmation, setDeleteConfirmation] = useState<DeleteConfirmation | null>(null);
-  const [ruleFormError, setRuleFormError] = useState("");
   const [toastNotification, setToastNotification] = useState<ToastNotification | null>(null);
   const [busyAction, setBusyAction] = useState<BusyAction>("startup");
   const [searchQuery, setSearchQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
+  const [checkingRuleIds, setCheckingRuleIds] = useState<string[]>([]);
+
+  // Modals state
+  const [ruleModal, setRuleModal] = useState<RuleModalState | null>(null);
+  const [groupModal, setGroupModal] = useState<GroupModalState | null>(null);
+  const [nodeModal, setNodeModal] = useState<NodeModalState | null>(null);
+
+  // Safety Deletion Modals state
+  const [proxyDeleteAnalysis, setProxyDeleteAnalysis] = useState<{
+    proxyId: string;
+    proxyName: string;
+    analysis: ProxyDeletionAnalysis;
+    forceDisableRules: boolean;
+    replacementProxyId: string | null;
+  } | null>(null);
+
+  const [groupDeleteAnalysis, setGroupDeleteAnalysis] = useState<{
+    groupId: string;
+    groupName: string;
+    analysis: ProxyGroupDeletionAnalysis;
+    forceDisableRules: boolean;
+  } | null>(null);
+
+  // Batch import state
   const [batchAddOpen, setBatchAddOpen] = useState(false);
   const [batchAddText, setBatchAddText] = useState("");
-  const [batchAddInboundProtocol, setBatchAddInboundProtocol] = useState<InboundProtocol>("socks");
+  const [batchAddInboundType, setBatchAddInboundType] = useState("mixed");
   const [batchAddInboundListen, setBatchAddInboundListen] = useState("127.0.0.1");
   const [batchAddError, setBatchAddError] = useState("");
-  const [checkingRuleIds, setCheckingRuleIds] = useState<string[]>([]);
-  const [trafficStats, setTrafficStats] = useState<Record<string, { uplink: number; downlink: number }>>({});
-  const [trafficSpeeds, setTrafficSpeeds] = useState<Record<string, { uplinkSpeed: number; downlinkSpeed: number }>>({});
-  const prevStatsRef = useRef<{ timestamp: number; stats: Record<string, { uplink: number; downlink: number }> } | null>(null);
-  const [statsDetailsRule, setStatsDetailsRule] = useState<ProxyRule | null>(null);
 
-  const openStatsDetailsModal = (rule: ProxyRule) => {
-    setStatsDetailsRule(rule);
-  };
+  const [ruleFormError, setRuleFormError] = useState("");
+  const [groupFormError, setGroupFormError] = useState("");
+  const [nodeFormError, setNodeFormError] = useState("");
 
-  const closeStatsDetailsModal = () => {
-    setStatsDetailsRule(null);
-  };
+  const isBusy = busyAction !== "";
 
+  // Visibility & polling
   useEffect(() => {
-    if (!runtimeStatus.running) {
-      setTrafficStats({});
-      setTrafficSpeeds({});
-      prevStatsRef.current = null;
-      return;
-    }
-
     let timerId: number | null = null;
-    let isRequestPending = false;
-
-    const poll = async () => {
-      if (isRequestPending || document.visibilityState !== "visible") {
-        return;
-      }
-
-      isRequestPending = true;
+    const pollStatus = async () => {
+      if (document.visibilityState !== "visible") return;
       try {
         const status = await backend.getRuntimeStatus();
-        if (!status.running) {
-          setRuntimeStatus(status);
-          setTrafficStats({});
-          setTrafficSpeeds({});
-          prevStatsRef.current = null;
-          return;
-        }
-
-        const res = await backend.queryMihomoStats();
-        const now = Date.now();
-        const currentStats: Record<string, { uplink: number; downlink: number }> = {};
-
-        if (res.stat) {
-          for (const item of res.stat) {
-            const match = item.name.match(/^inbound>>>inbound-([^>]+)>>>traffic>>>(uplink|downlink)$/);
-            if (match) {
-              const ruleId = match[1];
-              const direction = match[2] as "uplink" | "downlink";
-              if (!currentStats[ruleId]) {
-                currentStats[ruleId] = { uplink: 0, downlink: 0 };
-              }
-              currentStats[ruleId][direction] = item.value ?? 0;
-            }
-          }
-        }
-
-        const newSpeeds: Record<string, { uplinkSpeed: number; downlinkSpeed: number }> = {};
-        if (prevStatsRef.current) {
-          const timeDelta = (now - prevStatsRef.current.timestamp) / 1000;
-          if (timeDelta > 0.2) {
-            for (const ruleId in currentStats) {
-              const current = currentStats[ruleId];
-              const prev = prevStatsRef.current.stats[ruleId] || { uplink: 0, downlink: 0 };
-              
-              const upDelta = Math.max(0, current.uplink - prev.uplink);
-              const downDelta = Math.max(0, current.downlink - prev.downlink);
-              
-              newSpeeds[ruleId] = {
-                uplinkSpeed: Math.round(upDelta / timeDelta),
-                downlinkSpeed: Math.round(downDelta / timeDelta),
-              };
-            }
-          }
-        }
-
-        setTrafficStats(currentStats);
-        if (Object.keys(newSpeeds).length > 0) {
-          setTrafficSpeeds(newSpeeds);
-        }
-        prevStatsRef.current = { timestamp: now, stats: currentStats };
+        setRuntimeStatus(status);
       } catch (err) {
-        console.error("Failed to query Mihomo stats:", err);
-      } finally {
-        isRequestPending = false;
+        console.error("Failed to check runtime status:", err);
       }
     };
-
-    void poll();
-    timerId = window.setInterval(poll, 2000);
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        void poll();
-      }
-    };
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-
+    pollStatus();
+    timerId = window.setInterval(pollStatus, 3000);
     return () => {
-      if (timerId !== null) {
-        window.clearInterval(timerId);
-      }
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      if (timerId) window.clearInterval(timerId);
     };
-  }, [runtimeStatus.running]);
+  }, []);
 
+  // Theme application
   useEffect(() => {
     const updateThemeAttribute = (currentTheme: "system" | "light" | "dark") => {
       if (currentTheme === "system") {
@@ -872,7 +618,6 @@ function App() {
         document.documentElement.setAttribute("data-theme", currentTheme);
       }
     };
-
     updateThemeAttribute(theme);
 
     if (theme === "system") {
@@ -880,68 +625,21 @@ function App() {
       const handleChange = (event: MediaQueryListEvent) => {
         document.documentElement.setAttribute("data-theme", event.matches ? "dark" : "light");
       };
-
       mediaQuery.addEventListener("change", handleChange);
-      return () => {
-        mediaQuery.removeEventListener("change", handleChange);
-      };
+      return () => mediaQuery.removeEventListener("change", handleChange);
     }
   }, [theme]);
 
   const handleThemeChange = (nextTheme: "system" | "light" | "dark") => {
     setTheme(nextTheme);
-    localStorage.setItem("xray-tools-theme", nextTheme);
+    localStorage.setItem("mihomo-tools-theme", nextTheme);
   };
 
-  const rules = appState.rules;
-
-  const filteredRules = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    if (!query) {
-      return rules;
-    }
-    return rules.filter((rule) => {
-      const matchRemark = rule.remark.toLowerCase().includes(query);
-      const country = rule.ipCheck?.country?.toLowerCase() || "";
-      const matchCountry = country === query;
-      return matchRemark || matchCountry;
-    });
-  }, [rules, searchQuery]);
-
-  const itemsPerPage = 10;
-  const totalPages = Math.max(1, Math.ceil(filteredRules.length / itemsPerPage));
-
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [searchQuery]);
-
-  useEffect(() => {
-    if (currentPage > totalPages) {
-      setCurrentPage(totalPages);
-    }
-  }, [currentPage, totalPages]);
-
-  const paginatedRules = useMemo(() => {
-    const startIndex = (currentPage - 1) * itemsPerPage;
-    return filteredRules.slice(startIndex, startIndex + itemsPerPage);
-  }, [filteredRules, currentPage]);
-
-  const activeRuleCount = rules.filter((rule) => rule.enabled).length;
-  const allSelected = filteredRules.length > 0 && filteredRules.every((rule) => selectedRuleIds.includes(rule.id));
-  const selectedCount = selectedRuleIds.length;
-  const selectedRules = rules.filter((rule) => selectedRuleIds.includes(rule.id));
-  const shouldEnableSelectedRules = selectedRules.length > 0 && selectedRules.every((rule) => !rule.enabled);
-  const selectedToggleIcon: IconName = shouldEnableSelectedRules ? "check" : "stop";
-  const isBusy = busyAction !== "";
-  const outboundDraftCopyState = ruleModal === null ? null : getOutboundDraftCopyState(ruleModal.draft);
-
+  // State initialization
   useEffect(() => {
     let shouldUpdate = true;
-
     async function loadBackendState() {
       setBusyAction("startup");
-      setAppError("");
-
       try {
         const [validation, state, status, version] = await Promise.all([
           backend.validateMihomoBinary(),
@@ -949,11 +647,7 @@ function App() {
           backend.getRuntimeStatus(),
           backend.getMihomoVersion().catch(() => null),
         ]);
-
-        if (!shouldUpdate) {
-          return;
-        }
-
+        if (!shouldUpdate) return;
         setMihomoValidation(validation);
         setAppState(state);
         setRuntimeStatus(status);
@@ -961,108 +655,48 @@ function App() {
         setLastSavedAt("已从磁盘载入");
       } catch (error) {
         if (shouldUpdate) {
-          setAppError(`启动时无法读取后端状态：${getErrorMessage(error)}`);
+          showToast("error", `启动时读取后端状态失败：${getErrorMessage(error)}`);
         }
       } finally {
-        if (shouldUpdate) {
-          setBusyAction("");
-        }
+        if (shouldUpdate) setBusyAction("");
       }
     }
-
-    void loadBackendState();
-
+    loadBackendState();
     return () => {
       shouldUpdate = false;
     };
   }, []);
 
   useEffect(() => {
-    setSelectedRuleIds((currentIds) => currentIds.filter((currentId) => rules.some((rule) => rule.id === currentId)));
-  }, [rules]);
-
-  useEffect(() => {
-    if (toastNotification === null) {
-      return;
-    }
-
+    if (toastNotification === null) return;
     const timeoutId = window.setTimeout(() => {
-      setToastNotification((currentToast) => (currentToast?.id === toastNotification.id ? null : currentToast));
+      setToastNotification((curr) => curr?.id === toastNotification.id ? null : curr);
     }, toastAutoDismissMs);
-
     return () => window.clearTimeout(timeoutId);
   }, [toastNotification]);
 
   useEffect(() => {
     if (mihomoValidation !== null && !mihomoValidation.valid) {
-      showToast("warning", `${mihomoValidation.message}。请将 Mihomo 核心放到：${mihomoValidation.path}`);
+      showToast("warning", `${mihomoValidation.message}。请将 Mihomo 二进制文件放置在：${mihomoValidation.path}`);
     }
   }, [mihomoValidation]);
 
   const statusMeta = useMemo<StatusMeta>(() => {
     if (busyAction === "startup") {
-      return { label: "加载中", detail: "正在读取后端状态与运行时路径", tone: "is-restarting" };
+      return { label: "加载中", detail: "正在载入应用配置和组件", tone: "is-restarting" };
     }
-
     if (busyAction === "restart") {
-      return { label: "重启中", detail: "正在通过后端重新启动 Mihomo", tone: "is-restarting" };
+      return { label: "重启中", detail: "正在重新拉起 Mihomo 进程", tone: "is-restarting" };
     }
-
     if (runtimeStatus.running) {
-      const pidText = runtimeStatus.pid === null ? "" : ` PID ${runtimeStatus.pid}`;
-      return { label: "运行中", detail: `核心已启动，规则路由已生效${pidText}`, tone: "is-running" };
+      const pidText = runtimeStatus.pid ? ` (PID ${runtimeStatus.pid})` : "";
+      return { label: "运行中", detail: `Mihomo 核心运行良好，本地端口已映射${pidText}`, tone: "is-running" };
     }
-
-    return { label: "已停止", detail: "等待启动本地 Mihomo 核心", tone: "is-stopped" };
+    return { label: "已停止", detail: "已停止转发，等待开启代理服务", tone: "is-stopped" };
   }, [busyAction, runtimeStatus]);
-
-  function isRuleSelected(ruleId: string) {
-    return selectedRuleIds.includes(ruleId);
-  }
-
-  function toggleRuleSelection(ruleId: string) {
-    setSelectedRuleIds((currentIds) =>
-      currentIds.includes(ruleId) ? currentIds.filter((currentId) => currentId !== ruleId) : [...currentIds, ruleId],
-    );
-  }
-
-  function toggleSelectAll() {
-    if (allSelected) {
-      const filteredIds = new Set(filteredRules.map((rule) => rule.id));
-      setSelectedRuleIds((currentIds) => currentIds.filter((id) => !filteredIds.has(id)));
-    } else {
-      const filteredIds = filteredRules.map((rule) => rule.id);
-      setSelectedRuleIds((currentIds) => {
-        const nextIds = new Set([...currentIds, ...filteredIds]);
-        return Array.from(nextIds);
-      });
-    }
-  }
 
   function showToast(tone: ToastTone, message: string) {
     setToastNotification({ id: Date.now(), tone, message });
-  }
-
-  function clearToast() {
-    setToastNotification(null);
-  }
-
-  function setAppError(message: string) {
-    if (message === "") {
-      clearToast();
-      return;
-    }
-
-    showToast("error", message);
-  }
-
-  function setOperationMessage(message: string) {
-    if (message === "") {
-      clearToast();
-      return;
-    }
-
-    showToast("success", message);
   }
 
   async function saveAndApplyState(nextState: AppState) {
@@ -1070,265 +704,604 @@ function App() {
     setAppState(result.state);
     setRuntimeStatus(result.status);
     setLastSavedAt(formatTime());
-    setOperationMessage(result.restarted ? "配置已保存并重启运行中的 Mihomo。" : "配置已保存并写入生成文件。");
+    showToast("success", result.restarted ? "配置已保存并重启运行中的 Mihomo" : "配置已保存成功！");
     return result.state;
   }
 
-  async function refreshRuntimeFacts() {
-    const [validation, status] = await Promise.all([backend.validateMihomoBinary(), backend.getRuntimeStatus()]);
-    setMihomoValidation(validation);
-    setRuntimeStatus(status);
-    return { validation, status };
+  // Rules Tab Filter
+  const filteredRules = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return appState.rules;
+    return appState.rules.filter((rule) => {
+      const g = appState.groups.find(x => x.id === rule.groupId);
+      return rule.name.toLowerCase().includes(query) ||
+        String(rule.port).includes(query) ||
+        (g?.name.toLowerCase().includes(query) ?? false);
+    });
+  }, [appState.rules, appState.groups, searchQuery]);
+
+  const itemsPerPage = 10;
+  const totalPages = Math.max(1, Math.ceil(filteredRules.length / itemsPerPage));
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, activeTab]);
+
+  const paginatedRules = useMemo(() => {
+    const startIndex = (currentPage - 1) * itemsPerPage;
+    return filteredRules.slice(startIndex, startIndex + itemsPerPage);
+  }, [filteredRules, currentPage]);
+
+  const allSelected = filteredRules.length > 0 && filteredRules.every((rule) => selectedRuleIds.includes(rule.id));
+
+  function isRuleSelected(ruleId: string) {
+    return selectedRuleIds.includes(ruleId);
   }
 
-  async function toggleSelectedRulesEnabled() {
-    if (selectedRules.length === 0 || isBusy) {
-      return;
+  function toggleRuleSelection(ruleId: string) {
+    setSelectedRuleIds((curr) =>
+      curr.includes(ruleId) ? curr.filter((id) => id !== ruleId) : [...curr, ruleId]
+    );
+  }
+
+  function toggleSelectAll() {
+    if (allSelected) {
+      const filteredIds = new Set(filteredRules.map((r) => r.id));
+      setSelectedRuleIds((curr) => curr.filter((id) => !filteredIds.has(id)));
+    } else {
+      const filteredIds = filteredRules.map((r) => r.id);
+      setSelectedRuleIds((curr) => Array.from(new Set([...curr, ...filteredIds])));
     }
+  }
 
-    setBusyAction("toggle");
-    setAppError("");
-
+  // Actions for ListenerRules
+  async function toggleRuleEnabled(rule: ListenerRule) {
+    if (isBusy) return;
+    setBusyAction(`ip-${rule.id}`);
     try {
-      const nextState: AppState = {
-        ...appState,
-        rules: rules.map((rule) => (selectedRuleIds.includes(rule.id) ? { ...rule, enabled: shouldEnableSelectedRules } : rule)),
-      };
-
-      await saveAndApplyState(nextState);
-    } catch (error) {
-      setAppError(`切换规则失败：${getErrorMessage(error)}`);
+      const nextRules = appState.rules.map(r => r.id === rule.id ? { ...r, enabled: !r.enabled } : r);
+      await saveAndApplyState({ ...appState, rules: nextRules });
+    } catch (err) {
+      showToast("error", `切换状态失败：${getErrorMessage(err)}`);
     } finally {
       setBusyAction("");
     }
   }
 
-  async function checkRuleIp(rule: ProxyRule) {
-    if (isBusy) {
-      return;
+  async function toggleSelectedRulesEnabled(enabled: boolean) {
+    if (selectedRuleIds.length === 0 || isBusy) return;
+    setBusyAction("toggle");
+    try {
+      const nextRules = appState.rules.map(r => selectedRuleIds.includes(r.id) ? { ...r, enabled } : r);
+      await saveAndApplyState({ ...appState, rules: nextRules });
+    } catch (err) {
+      showToast("error", `批量操作失败：${getErrorMessage(err)}`);
+    } finally {
+      setBusyAction("");
     }
+  }
 
+  async function handleDeleteRule(ruleId: string) {
+    if (isBusy) return;
+    setBusyAction("delete");
+    try {
+      const nextState = await backend.deleteRule(ruleId);
+      await saveAndApplyState(nextState);
+      setSelectedRuleIds((curr) => curr.filter(id => id !== ruleId));
+    } catch (err) {
+      showToast("error", `删除规则失败：${getErrorMessage(err)}`);
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function handleDeleteSelectedRules() {
+    if (selectedRuleIds.length === 0 || isBusy) return;
+    setBusyAction("delete");
+    try {
+      const nextRules = appState.rules.filter(r => !selectedRuleIds.includes(r.id));
+      await saveAndApplyState({ ...appState, rules: nextRules });
+      setSelectedRuleIds([]);
+    } catch (err) {
+      showToast("error", `批量删除失败：${getErrorMessage(err)}`);
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function handleDuplicateRule(ruleId: string) {
+    if (isBusy) return;
+    setBusyAction("rule");
+    try {
+      const nextState = await backend.duplicateRule(ruleId);
+      await saveAndApplyState(nextState);
+    } catch (err) {
+      showToast("error", `复制失败：${getErrorMessage(err)}`);
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function checkRuleIp(rule: ListenerRule) {
+    if (isBusy) return;
     setBusyAction(`ip-${rule.id}`);
-    setAppError("");
-    setOperationMessage("");
-
     try {
       const state = await backend.checkRuleIp(rule.id);
       setAppState(state);
-      setLastSavedAt(formatTime());
-      setOperationMessage(`${rule.remark} 的出口 IP 已更新。`);
-    } catch (error) {
-      setAppError(`IP 检查失败：${getErrorMessage(error)}`);
+      showToast("success", `${rule.name} 出口 IP 刷新成功！`);
+    } catch (err) {
+      showToast("error", `IP 查询失败：${getErrorMessage(err)}`);
     } finally {
       setBusyAction("");
     }
   }
 
   async function checkSelectedRulesIp() {
-    if (isBusy) {
+    const enabledSelected = appState.rules.filter(r => selectedRuleIds.includes(r.id) && r.enabled);
+    if (enabledSelected.length === 0) {
+      showToast("warning", "请选择已启用的入口规则进行测速检测。");
       return;
     }
-
-    if (!runtimeStatus.running) {
-      setAppError("请先启动 Mihomo 核心以进行 IP 检测。");
-      return;
-    }
-
-    const enabledSelectedRules = rules.filter((rule) => selectedRuleIds.includes(rule.id) && rule.enabled);
-    if (enabledSelectedRules.length === 0) {
-      setAppError("所选规则中没有已启用的规则，无法进行 IP 检测。");
-      return;
-    }
-
-    const enabledSelectedIds = enabledSelectedRules.map((rule) => rule.id);
-
     setBusyAction("batch-ip");
-    setCheckingRuleIds(enabledSelectedIds);
-    setAppError("");
-    setOperationMessage("");
-
+    setCheckingRuleIds(enabledSelected.map(r => r.id));
     try {
-      const state = await backend.checkRulesIpBatch(enabledSelectedIds);
+      const state = await backend.checkRulesIpBatch(enabledSelected.map(r => r.id));
       setAppState(state);
-      setLastSavedAt(formatTime());
-      showToast("success", `批量 IP 检测完成！共检测了 ${enabledSelectedIds.length} 个代理出口。`);
-      setOperationMessage(`已成功并行检测所选的 ${enabledSelectedIds.length} 个启用代理规则的出口 IP。`);
-    } catch (error) {
-      setAppError(`批量 IP 检测失败：${getErrorMessage(error)}`);
+      showToast("success", `批量 IP 检测已并行完成。`);
+    } catch (err) {
+      showToast("error", `批量检测失败：${getErrorMessage(err)}`);
     } finally {
       setCheckingRuleIds([]);
       setBusyAction("");
     }
   }
 
+  // Runtime control
   async function handleRuntimeAction(action: RuntimeAction) {
-    if (isBusy) {
-      return;
-    }
-
+    if (isBusy) return;
     setBusyAction(action.name);
-    setAppError("");
-    setOperationMessage("");
-
     try {
       if (action.name === "save") {
         await saveAndApplyState(appState);
         return;
       }
-
       if (action.name === "play") {
-        const validation = await backend.validateMihomoBinary();
-        setMihomoValidation(validation);
+        const val = await backend.validateMihomoBinary();
+        setMihomoValidation(val);
+        if (!val.valid) throw new Error(val.message);
 
-        if (!validation.valid) {
-          throw new Error(validation.message);
-        }
-
-        const portValidation = await backend.validateRulePorts(appState);
-
-        if (!portValidation.valid) {
-          throw new Error(portValidation.message);
-        }
+        const portVal = await backend.validateRulePorts(appState);
+        if (!portVal.valid) throw new Error(portVal.message);
 
         await backend.saveAppState(appState);
         const status = await backend.startMihomo();
         setRuntimeStatus(status);
         setLastSavedAt(formatTime());
-        setOperationMessage("Mihomo 已启动，当前磁盘状态已用于生成运行配置。");
+        showToast("success", "Mihomo 代理核心已成功启动");
         return;
       }
-
       if (action.name === "stop") {
         const status = await backend.stopMihomo();
         setRuntimeStatus(status);
-        setOperationMessage("Mihomo 已停止。");
+        showToast("success", "核心已停止运行");
         return;
       }
-
-      const status = await backend.restartMihomo();
-      setRuntimeStatus(status);
-      setOperationMessage("Mihomo 已重启并重新读取已保存状态。");
-    } catch (error) {
-      setAppError(`${action.label}失败：${getErrorMessage(error)}`);
-      try {
-        await refreshRuntimeFacts();
-      } catch {
-        setRuntimeStatus({ running: false, pid: null });
+      if (action.name === "restart") {
+        const status = await backend.restartMihomo();
+        setRuntimeStatus(status);
+        showToast("success", "已成功重载 Mihomo 服务");
       }
+    } catch (err) {
+      showToast("error", `${action.label}失败：${getErrorMessage(err)}`);
     } finally {
       setBusyAction("");
     }
   }
 
-  async function copyToClipboard(key: string, text: string) {
-    setCopiedKey(key);
-
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      setCopiedKey("复制失败");
-    }
-
-    window.setTimeout(() => setCopiedKey(""), 1200);
-  }
-
-  async function handleCopy(rule: ProxyRule) {
-    if (isBusy) {
-      return;
-    }
-
-    setBusyAction("rule");
-    setAppError("");
-    setOperationMessage("");
-
-    try {
-      const savedState = await backend.duplicateRule(rule.id);
-      await saveAndApplyState(savedState);
-      setOperationMessage(`规则 “${rule.remark}” 已成功复制，入口端口已自动配置。`);
-    } catch (error) {
-      setAppError(`复制规则失败：${getErrorMessage(error)}`);
-    } finally {
-      setBusyAction("");
-    }
-  }
-
+  // Port Autoselect helper
   async function findDefaultInboundPort() {
-    const enabledPorts = new Set(rules.filter((rule) => rule.enabled).map((rule) => rule.inbound.port));
-    const portCount = maxAutoInboundPort - minAutoInboundPort + 1;
+    const usedPorts = new Set(appState.rules.map(r => r.port));
+    const count = maxAutoInboundPort - minAutoInboundPort + 1;
     const startPort = randomAutoInboundPort();
-    const startOffset = startPort - minAutoInboundPort;
+    const offset = startPort - minAutoInboundPort;
 
-    for (let step = 0; step < portCount; step += 1) {
-      const port = minAutoInboundPort + ((startOffset + step) % portCount);
-      if (enabledPorts.has(port)) {
-        continue;
-      }
-
-      const availability = await backend.checkPortAvailable(port, "127.0.0.1");
-      if (availability.available) {
-        return String(port);
-      }
+    for (let step = 0; step < count; step++) {
+      const port = minAutoInboundPort + ((offset + step) % count);
+      if (usedPorts.has(port)) continue;
+      const res = await backend.checkPortAvailable(port, "127.0.0.1");
+      if (res.available) return String(port);
     }
-
     return "";
   }
 
-  function openBatchAddModal() {
-    setBatchAddError("");
-    setBatchAddText("");
-    setBatchAddInboundProtocol("socks");
-    setBatchAddInboundListen("127.0.0.1");
-    setBatchAddOpen(true);
+  // Rule Form Handler
+  function openCreateRuleModal() {
+    setRuleFormError("");
+    setRuleModal({
+      mode: "create",
+      editingId: null,
+      draft: {
+        name: `入口-${appState.rules.length + 1}`,
+        listen: "127.0.0.1",
+        port: "",
+        inboundType: "mixed",
+        groupId: appState.groups[0]?.id ?? "",
+        enabled: true,
+      }
+    });
+
+    findDefaultInboundPort().then(port => {
+      setRuleModal(curr => {
+        if (!curr || curr.mode !== "create") return curr;
+        return {
+          ...curr,
+          draft: { ...curr.draft, port: curr.draft.port || port }
+        };
+      });
+    }).catch(() => {});
   }
 
-  function closeBatchAddModal() {
-    setBatchAddOpen(false);
-    setBatchAddError("");
+  function openEditRuleModal(rule: ListenerRule) {
+    setRuleFormError("");
+    setRuleModal({
+      mode: "edit",
+      editingId: rule.id,
+      draft: {
+        name: rule.name,
+        listen: rule.listen,
+        port: String(rule.port),
+        inboundType: rule.inboundType,
+        groupId: rule.groupId,
+        enabled: rule.enabled,
+      }
+    });
   }
 
-  async function handleBatchAddSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (isBusy) {
+  async function handleRuleSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!ruleModal || isBusy) return;
+    setRuleFormError("");
+
+    const { name, listen, port: portStr, inboundType, groupId, enabled } = ruleModal.draft;
+    const port = parsePort(portStr);
+
+    if (!name.trim() || !listen.trim() || !groupId) {
+      setRuleFormError("请填写全部必须的字段");
       return;
     }
-
-    setBatchAddError("");
-    setAppError("");
-
-    const lines = batchAddText
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line !== "");
-
-    if (lines.length === 0) {
-      setBatchAddError("请输入至少一条有效的代理出口链接。");
+    if (port === null) {
+      setRuleFormError("本地端口必须是 1 到 65535 之间的有效整数");
       return;
     }
 
     setBusyAction("rule");
-
     try {
-      // 1. Parse all links first to ensure complete atomic validation
-      const parseResults: Array<{ outbound: OutboundConfig; displayName: string | null }> = [];
+      const ruleObj: ListenerRule = {
+        id: ruleModal.editingId ?? "",
+        name: name.trim(),
+        listen: listen.trim(),
+        port,
+        inboundType,
+        groupId,
+        enabled,
+        ipCheck: null,
+      };
+
+      let nextState;
+      if (ruleModal.mode === "create") {
+        nextState = await backend.addRule(ruleObj);
+      } else {
+        nextState = await backend.updateRule(ruleObj);
+      }
+      await saveAndApplyState(nextState);
+      setRuleModal(null);
+    } catch (err) {
+      setRuleFormError(`保存失败：${getErrorMessage(err)}`);
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  // Group Form Handler
+  function openCreateGroupModal() {
+    setGroupFormError("");
+    setGroupModal({
+      mode: "create",
+      editingId: null,
+      draft: {
+        name: `策略组-${appState.groups.length + 1}`,
+        groupType: "select",
+        proxies: [],
+      }
+    });
+  }
+
+  function openEditGroupModal(group: ProxyGroup) {
+    setGroupFormError("");
+    setGroupModal({
+      mode: "edit",
+      editingId: group.id,
+      draft: {
+        name: group.name,
+        groupType: group.groupType,
+        proxies: [...group.proxies],
+      }
+    });
+  }
+
+  async function handleGroupSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!groupModal || isBusy) return;
+    setGroupFormError("");
+
+    const { name, groupType, proxies } = groupModal.draft;
+    if (!name.trim()) {
+      setGroupFormError("名称不能为空");
+      return;
+    }
+    if (proxies.length === 0) {
+      setGroupFormError("请选择至少一个代理成员节点");
+      return;
+    }
+
+    setBusyAction("rule");
+    try {
+      const groupObj: ProxyGroup = {
+        id: groupModal.editingId ?? "",
+        name: name.trim(),
+        groupType,
+        proxies,
+      };
+
+      let nextState;
+      if (groupModal.mode === "create") {
+        nextState = await backend.addProxyGroup(groupObj);
+      } else {
+        nextState = await backend.updateProxyGroup(groupObj);
+      }
+      await saveAndApplyState(nextState);
+      setGroupModal(null);
+    } catch (err) {
+      setGroupFormError(`保存策略组失败：${getErrorMessage(err)}`);
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function triggerDeleteGroup(group: ProxyGroup) {
+    setBusyAction("delete");
+    try {
+      const analysis = await backend.analyzeProxyGroupDeletion(group.id);
+      setGroupDeleteAnalysis({
+        groupId: group.id,
+        groupName: group.name,
+        analysis,
+        forceDisableRules: false,
+      });
+    } catch (err) {
+      showToast("error", `分析引用失败：${getErrorMessage(err)}`);
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function confirmDeleteGroup() {
+    if (!groupDeleteAnalysis || isBusy) return;
+    setBusyAction("delete");
+    try {
+      const nextState = await backend.deleteProxyGroupSafe(
+        groupDeleteAnalysis.groupId,
+        groupDeleteAnalysis.forceDisableRules
+      );
+      await saveAndApplyState(nextState);
+      setGroupDeleteAnalysis(null);
+    } catch (err) {
+      showToast("error", `删除策略组失败：${getErrorMessage(err)}`);
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  // Node Form Handler
+  function openCreateNodeModal() {
+    setNodeFormError("");
+    setNodeModal({
+      mode: "create",
+      editingId: null,
+      draft: createEmptyNodeDraft(appState.proxies.length + 1)
+    });
+  }
+
+  function openEditNodeModal(node: ProxyNode) {
+    setNodeFormError("");
+    setNodeModal({
+      mode: "edit",
+      editingId: node.id,
+      draft: toNodeDraft(node),
+    });
+  }
+
+  async function handleNodeLinkImport(url: string) {
+    if (!nodeModal || !url.trim()) return;
+    setNodeFormError("");
+    try {
+      const parsed = await backend.parseOutboundUrl(url.trim());
+      setNodeModal(curr => {
+        if (!curr) return curr;
+        return {
+          ...curr,
+          draft: applyOutboundToDraft(
+            {
+              ...curr.draft,
+              name: parsed.displayName ?? curr.draft.name,
+              outboundProxyUrl: url.trim(),
+            },
+            parsed.outbound
+          )
+        };
+      });
+      if (parsed.warnings.length > 0) {
+        setNodeFormError(`解析成功，提示：${parsed.warnings.join("；")}`);
+      }
+    } catch (err) {
+      setNodeFormError(`链接解析失败：${getErrorMessage(err)}`);
+    }
+  }
+
+  async function handleNodeSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!nodeModal || isBusy) return;
+    setNodeFormError("");
+
+    const draft = { ...nodeModal.draft };
+    if (!draft.name.trim() || !draft.address.trim()) {
+      setNodeFormError("名称和服务器地址不能为空");
+      return;
+    }
+    const port = parsePort(draft.port);
+    if (port === null) {
+      setNodeFormError("服务器端口必须是 1 到 65535 之间的整数");
+      return;
+    }
+
+    const config = buildOutboundFromDraft(draft);
+    if (!config) {
+      setNodeFormError("表单参数校验失败，请检查各协议特定参数。");
+      return;
+    }
+
+    setBusyAction("rule");
+    try {
+      const nodeObj: ProxyNode = {
+        id: nodeModal.editingId ?? "",
+        name: draft.name.trim(),
+        config,
+      };
+
+      let nextState;
+      if (nodeModal.mode === "create") {
+        nextState = await backend.addProxyNode(nodeObj);
+      } else {
+        nextState = await backend.updateProxyNode(nodeObj);
+      }
+      await saveAndApplyState(nextState);
+      setNodeModal(null);
+    } catch (err) {
+      setNodeFormError(`保存代理节点失败：${getErrorMessage(err)}`);
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function triggerDeleteNode(node: ProxyNode) {
+    setBusyAction("delete");
+    try {
+      const analysis = await backend.analyzeProxyDeletion(node.id);
+      setProxyDeleteAnalysis({
+        proxyId: node.id,
+        proxyName: node.name,
+        analysis,
+        forceDisableRules: false,
+        replacementProxyId: null,
+      });
+    } catch (err) {
+      showToast("error", `分析引用失败：${getErrorMessage(err)}`);
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function confirmDeleteNode() {
+    if (!proxyDeleteAnalysis || isBusy) return;
+    setBusyAction("delete");
+    try {
+      const nextState = await backend.deleteProxyNodeSafe(
+        proxyDeleteAnalysis.proxyId,
+        proxyDeleteAnalysis.forceDisableRules,
+        proxyDeleteAnalysis.replacementProxyId
+      );
+      await saveAndApplyState(nextState);
+      setProxyDeleteAnalysis(null);
+    } catch (err) {
+      showToast("error", `删除节点失败：${getErrorMessage(err)}`);
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  // Clipboard batch import
+  async function handleBatchAddSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (isBusy) return;
+    setBatchAddError("");
+
+    const lines = batchAddText.split("\n").map(l => l.trim()).filter(l => l !== "");
+    if (lines.length === 0) {
+      setBatchAddError("请输入至少一个代理链接。");
+      return;
+    }
+
+    setBusyAction("rule");
+    try {
+      const parseResults = [];
       for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
         try {
-          const parsed = await backend.parseOutboundUrl(line);
-          parseResults.push({
-            outbound: parsed.outbound,
-            displayName: parsed.displayName,
-          });
-        } catch (error) {
-          throw new Error(`第 ${i + 1} 行解析失败：${getErrorMessage(error)}`);
+          const parsed = await backend.parseOutboundUrl(lines[i]);
+          parseResults.push(parsed);
+        } catch (err) {
+          throw new Error(`第 ${i + 1} 行解析失败：${getErrorMessage(err)}`);
         }
       }
 
-      // 2. Allocate ports sequentially with system & existing rules check
-      const usedPorts = new Set(rules.map((rule) => rule.inbound.port));
+      // 1. 批量为它们创建 ProxyNode 写入 proxies 列表
+      let nextState = { ...appState };
+      const createdNodeNames: string[] = [];
+      const timestamp = Date.now();
+
+      for (let i = 0; i < parseResults.length; i++) {
+        const parsed = parseResults[i];
+        let remark = parsed.displayName?.trim() ?? "";
+        if (!remark) {
+          remark = `节点_${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+        }
+        // 防止重名
+        let name = remark;
+        let suffix = 1;
+        while (nextState.proxies.some(p => p.name === name)) {
+          name = `${remark}-${suffix}`;
+          suffix++;
+        }
+
+        const nodeObj: ProxyNode = {
+          id: `proxy-batch-${timestamp}-${i}`,
+          name,
+          config: parsed.outbound,
+        };
+        nextState.proxies.push(nodeObj);
+        createdNodeNames.push(name);
+      }
+
+      // 2. 批量为每个代理节点单独创建一个专属策略组
+      const createdGroupIds: Array<{ id: string; name: string }> = [];
+      for (let i = 0; i < createdNodeNames.length; i++) {
+        const nodeName = createdNodeNames[i];
+        const gName = `${nodeName}-出口`;
+        const gId = `group-batch-${timestamp}-${i}`;
+        nextState.groups.push({
+          id: gId,
+          name: gName,
+          groupType: "select",
+          proxies: [nodeName, "DIRECT"],
+        });
+        createdGroupIds.push({ id: gId, name: gName });
+      }
+
+      // 3. 批量分配本地顺序端口创建 rules
+      const usedPorts = new Set(appState.rules.map(r => r.port));
       const allocatedPorts: number[] = [];
       let currentPort = 50000;
 
-      for (let i = 0; i < lines.length; i++) {
+      for (let i = 0; i < createdGroupIds.length; i++) {
         let found = false;
         while (currentPort <= 65535) {
           if (usedPorts.has(currentPort) || allocatedPorts.includes(currentPort)) {
@@ -1344,367 +1317,54 @@ function App() {
           }
           currentPort++;
         }
-        if (!found) {
-          throw new Error("没有足够的可用本地端口（范围 50000-65535）");
-        }
+        if (!found) throw new Error("本地 50000-65535 范围内没有足够的空闲端口");
       }
 
-      // 3. Construct rule objects
-      const newRules: ProxyRule[] = [];
-      const timestamp = Date.now();
-      for (let i = 0; i < lines.length; i++) {
-        const { outbound, displayName } = parseResults[i];
+      for (let i = 0; i < createdGroupIds.length; i++) {
+        const { id: gId, name: gName } = createdGroupIds[i];
         const port = allocatedPorts[i];
-
-        // Name generation: extracted or random
-        let remark = displayName?.trim() ?? "";
-        if (remark === "") {
-          const randomSuffix = Math.random().toString(36).substring(2, 6).toUpperCase();
-          remark = `出口_${randomSuffix}`;
-        }
-
-        newRules.push({
-          id: `rule-${timestamp}-${i}`,
-          remark,
+        nextState.rules.push({
+          id: `rule-batch-${timestamp}-${i}`,
+          name: `${gName.replace("-出口", "")}-入口`,
+          listen: batchAddInboundListen,
+          port,
+          inboundType: batchAddInboundType,
+          groupId: gId,
           enabled: true,
-          inbound: {
-            protocol: batchAddInboundProtocol,
-            listen: batchAddInboundListen.trim(),
-            port,
-            auth: null,
-          },
-          outbound,
           ipCheck: null,
         });
       }
 
-      // 4. Update state and save
-      const nextState: AppState = {
-        ...appState,
-        rules: [...appState.rules, ...newRules],
-      };
-
       await saveAndApplyState(nextState);
-      showToast("success", `已成功批量添加 ${newRules.length} 条代理规则！`);
-      closeBatchAddModal();
-    } catch (error) {
-      setBatchAddError(getErrorMessage(error));
+      showToast("success", `批量导入已成功！共生成了 ${parseResults.length} 对端口、策略组与节点关系。`);
+      setBatchAddOpen(false);
+    } catch (err) {
+      setBatchAddError(getErrorMessage(err));
     } finally {
       setBusyAction("");
     }
   }
 
-  function openCreateRuleModal() {
-    setRuleFormError("");
-    setRuleModal({
-      mode: "create",
-      editingRuleId: null,
-      inboundAuthExpanded: false,
-      draft: createEmptyRuleDraft(rules.length + 1),
-    });
-
-    void findDefaultInboundPort()
-      .then((port) => {
-        if (port === "") {
-          return;
-        }
-
-        setRuleModal((currentModal) =>
-          currentModal?.mode === "create"
-            ? {
-              ...currentModal,
-              draft: {
-                ...currentModal.draft,
-                inboundPort: currentModal.draft.inboundPort.trim() === "" ? port : currentModal.draft.inboundPort,
-              },
-            }
-            : currentModal,
-        );
-      })
-      .catch((error) => setRuleFormError(`自动选择入口端口失败：${getErrorMessage(error)}`));
-  }
-
-  function openEditRuleModal(rule: ProxyRule) {
-    setRuleFormError("");
-    setRuleModal({
-      mode: "edit",
-      editingRuleId: rule.id,
-      inboundAuthExpanded: rule.inbound.auth !== null,
-      draft: toRuleDraft(rule),
-    });
-  }
-
-  function closeRuleModal() {
-    setRuleModal(null);
-    setRuleFormError("");
-  }
-
-  function updateRuleDraft<FieldName extends keyof RuleFormState>(fieldName: FieldName, value: RuleFormState[FieldName]) {
-    setRuleModal((currentModal) =>
-      currentModal === null
-        ? currentModal
-        : {
-          ...currentModal,
-          draft: {
-            ...currentModal.draft,
-            [fieldName]: value,
-            importedOutbound: outboundConfigFieldNames.includes(fieldName) ? null : currentModal.draft.importedOutbound,
-          },
-        },
-    );
-  }
-
-  function toggleInboundAuthFields() {
-    setRuleModal((currentModal) =>
-      currentModal === null
-        ? currentModal
-        : {
-          ...currentModal,
-          inboundAuthExpanded: !currentModal.inboundAuthExpanded,
-        },
-    );
-  }
-
-  async function handleOutboundProxyUrlChange(value: string) {
-    setRuleFormError("");
-    updateRuleDraft("outboundProxyUrl", value);
-
-    const trimmedValue = value.trim();
-
-    if (trimmedValue === "" || !trimmedValue.includes("://")) {
-      setRuleModal((currentModal) =>
-        currentModal === null
-          ? currentModal
-          : {
-            ...currentModal,
-            draft: {
-              ...currentModal.draft,
-              importedOutbound: null,
-            },
-          },
-      );
-      return;
-    }
-
+  async function copyToClipboard(key: string, text: string) {
+    setCopiedKey(key);
     try {
-      const parsedProxy = await backend.parseOutboundUrl(trimmedValue);
-      setRuleModal((currentModal) => {
-        if (currentModal === null || currentModal.draft.outboundProxyUrl !== value) {
-          return currentModal;
-        }
-
-        const shouldUseDisplayName = currentModal.draft.remark.trim() === "" && parsedProxy.displayName !== null;
-
-        return {
-          ...currentModal,
-          draft: applyOutboundToDraft(
-            {
-              ...currentModal.draft,
-              remark: shouldUseDisplayName ? parsedProxy.displayName ?? currentModal.draft.remark : currentModal.draft.remark,
-            },
-            parsedProxy.outbound,
-          ),
-        };
-      });
-
-      if (parsedProxy.warnings.length > 0) {
-        setRuleFormError(`代理链接已导入，但有提示：${parsedProxy.warnings.join("；")}`);
-      }
-    } catch (error) {
-      setRuleFormError(`代理链接解析失败：${getErrorMessage(error)}`);
+      await navigator.clipboard.writeText(text);
+    } catch {
+      setCopiedKey("复制失败");
     }
-  }
-
-  async function handleRuleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    if (ruleModal === null || isBusy) {
-      return;
-    }
-
-    setRuleFormError("");
-    setAppError("");
-
-    const draft = { ...ruleModal.draft };
-
-    const trimmedRemark = draft.remark.trim();
-    const trimmedListen = draft.inboundListen.trim();
-    const trimmedHost = draft.outboundHost.trim();
-    const trimmedVlessId = draft.vlessId.trim();
-    const trimmedVlessEncryption = draft.vlessEncryption.trim();
-    const trimmedShadowsocksMethod = draft.shadowsocksMethod.trim();
-    const inboundPort = ruleModal.mode === "create" ? parseOptionalPort(draft.inboundPort) : parsePort(draft.inboundPort);
-    const outboundPort = parsePort(draft.outboundPort);
-    const vlessLevel = parseOptionalNonNegativeInteger(draft.vlessLevel);
-    const trojanLevel = parseOptionalNonNegativeInteger(draft.trojanLevel);
-
-    if (trimmedRemark === "" || trimmedListen === "" || trimmedHost === "") {
-      setRuleFormError("请填写备注、监听地址和上游主机。");
-      return;
-    }
-
-    if (inboundPort === null && draft.inboundPort.trim() !== "") {
-      setRuleFormError("入口端口必须是 1 到 65535 之间的整数，或在新建规则时留空自动选择。");
-      return;
-    }
-
-    if (ruleModal.mode === "edit" && inboundPort === null) {
-      setRuleFormError("编辑已有规则时必须填写入口端口。");
-      return;
-    }
-
-    if (outboundPort === null) {
-      setRuleFormError("上游端口必须是 1 到 65535 之间的整数。");
-      return;
-    }
-
-    if (Number.isNaN(vlessLevel)) {
-      setRuleFormError("VLESS level 必须为空或非负整数。");
-      return;
-    }
-
-    if (Number.isNaN(trojanLevel)) {
-      setRuleFormError("Trojan level 必须为空或非负整数。");
-      return;
-    }
-
-    if (hasPartialAuth(draft.inboundUsername, draft.inboundPassword) || (draft.outboundProtocol === "socks" && hasPartialAuth(draft.outboundUsername, draft.outboundPassword))) {
-      setRuleFormError("启用用户名密码认证时，用户名和密码都必须填写。");
-      return;
-    }
-
-    if (draft.outboundProtocol === "vless") {
-      if (trimmedVlessId === "" || trimmedVlessEncryption === "") {
-        setRuleFormError("VLESS 必须填写 UUID / ID 和加密字段，普通 VLESS 使用 none。");
-        return;
-      }
-
-      if (draft.vlessSecurity === "reality" && draft.vlessRealityPublicKey.trim() === "") {
-        setRuleFormError("REALITY 安全层必须填写 Public Key。");
-        return;
-      }
-    }
-
-    if (draft.outboundProtocol === "shadowsocks") {
-      if (trimmedShadowsocksMethod === "" || draft.shadowsocksPassword === "") {
-        setRuleFormError("Shadowsocks 必须填写加密方法和密码。");
-        return;
-      }
-
-      if (["none", "plain"].includes(trimmedShadowsocksMethod.toLowerCase())) {
-        setRuleFormError("Shadowsocks 不支持 none/plain 这类明文方法。");
-        return;
-      }
-    }
-
-    if (draft.outboundProtocol === "trojan") {
-      if (draft.trojanPassword === "") {
-        setRuleFormError("Trojan 必须填写密码。");
-        return;
-      }
-
-      if (draft.trojanSecurity === "reality" && draft.trojanRealityPublicKey.trim() === "") {
-        setRuleFormError("REALITY 安全层必须填写 Public Key。");
-        return;
-      }
-    }
-
-    try {
-      setBusyAction("rule");
-
-      if (ruleModal.mode === "edit" && ruleModal.editingRuleId !== null) {
-        const updatedRule = buildRuleFromDraft(ruleModal.editingRuleId, draft);
-
-        if (updatedRule === null) {
-          setRuleFormError("端口必须是 1 到 65535 之间的整数。");
-          return;
-        }
-
-        const savedState = await backend.updateRule(updatedRule);
-        await saveAndApplyState(savedState);
-        closeRuleModal();
-        return;
-      }
-
-      const outbound = buildOutboundFromDraft(draft);
-
-      if (outbound === null) {
-        setRuleFormError("上游端口必须是 1 到 65535 之间的整数。");
-        return;
-      }
-
-      const savedState = await backend.addRule({
-        remark: trimmedRemark,
-        inboundProtocol: draft.inboundProtocol,
-        inboundListen: trimmedListen,
-        inboundPort,
-        inboundAuth: buildAuthConfig(draft.inboundUsername, draft.inboundPassword),
-        outbound,
-        enabled: draft.enabled,
-      });
-
-      await saveAndApplyState(savedState);
-      closeRuleModal();
-    } catch (error) {
-      setRuleFormError(`保存规则失败：${getErrorMessage(error)}`);
-    } finally {
-      setBusyAction("");
-    }
-  }
-
-  function handleDelete(rule: ProxyRule) {
-    setDeleteConfirmation({ mode: "single", ruleId: rule.id, remark: rule.remark });
-  }
-
-  function deleteSelectedRules() {
-    const selectedExistingRuleIds = rules.filter((rule) => selectedRuleIds.includes(rule.id)).map((rule) => rule.id);
-
-    if (selectedExistingRuleIds.length === 0) {
-      return;
-    }
-
-    setDeleteConfirmation({ mode: "bulk", ruleIds: selectedExistingRuleIds, count: selectedExistingRuleIds.length });
-  }
-
-  function closeDeleteConfirmation() {
-    setDeleteConfirmation(null);
-  }
-
-  async function confirmDeleteRules() {
-    if (deleteConfirmation === null || isBusy) {
-      return;
-    }
-
-    const targetRuleIds = deleteConfirmation.mode === "single" ? [deleteConfirmation.ruleId] : deleteConfirmation.ruleIds;
-    setBusyAction("delete");
-    setAppError("");
-
-    try {
-      const nextState: AppState = {
-        ...appState,
-        rules: appState.rules.filter((rule) => !targetRuleIds.includes(rule.id)),
-      };
-
-      await saveAndApplyState(nextState);
-      setSelectedRuleIds((currentIds) => currentIds.filter((currentId) => !targetRuleIds.includes(currentId)));
-      setDeleteConfirmation(null);
-    } catch (error) {
-      setAppError(`删除规则失败：${getErrorMessage(error)}`);
-    } finally {
-      setBusyAction("");
-    }
+    window.setTimeout(() => setCopiedKey(""), 1200);
   }
 
   return (
     <main className="app-shell">
       {toastNotification !== null ? (
-        <div className="toast-layer" aria-live={toastNotification.tone === "error" ? "assertive" : "polite"} aria-atomic="true">
-          <div className={`toast-card is-${toastNotification.tone}`} role={toastNotification.tone === "error" ? "alert" : "status"}>
-            <span className="toast-mark" aria-hidden="true">
+        <div className="toast-layer" aria-live="polite" aria-atomic="true">
+          <div className={`toast-card is-${toastNotification.tone}`} role="status">
+            <span className="toast-mark">
               <Icon name={toastNotification.tone === "success" ? "check" : toastNotification.tone === "warning" ? "scan" : "close"} />
             </span>
             <p>{toastNotification.message}</p>
-            <button className="toast-close" type="button" aria-label="关闭通知" onClick={clearToast}>
+            <button className="toast-close" type="button" aria-label="关闭" onClick={() => setToastNotification(null)}>
               <Icon name="close" />
             </button>
           </div>
@@ -1721,838 +1381,981 @@ function App() {
         onChangeTheme={handleThemeChange}
       />
 
-      <section className="metrics-grid" aria-label="规则概览">
+      <section className="metrics-grid" aria-label="概览">
         <div className="metric-card">
-          <span>{rules.length}</span>
-          <p>规则总数</p>
+          <span>{appState.rules.length}</span>
+          <p>入口规则</p>
         </div>
         <div className="metric-card">
-          <span>{activeRuleCount}</span>
-          <p>启用入口</p>
+          <span>{appState.groups.length}</span>
+          <p>代理组数</p>
         </div>
         <div className="metric-card">
-          <span>{selectedCount}</span>
-          <p>已选择</p>
+          <span>{appState.proxies.length}</span>
+          <p>节点总数</p>
         </div>
         <div className="metric-card wide">
           <span>{lastSavedAt}</span>
-          <p>上次保存配置</p>
+          <p>系统配置保存时间</p>
         </div>
       </section>
 
-      <section className="rules-panel" aria-labelledby="rules-title">
-        <div className="toolbar">
-          <div className="toolbar-title">
-            <p className="eyebrow">Rules</p>
-            <h2 id="rules-title">代理规则</h2>
-          </div>
+      {/* Tabs navigation */}
+      <div className="tabs-nav" style={{ display: "flex", gap: "var(--space-3)", margin: "0 var(--space-5) var(--space-4)" }}>
+        <button
+          className={`tab-btn primary-button ${activeTab === "rules" ? "" : "ghost-button"}`}
+          onClick={() => setActiveTab("rules")}
+          style={{ borderRadius: "var(--radius-lg)" }}
+        >
+          <Icon name="layers" />
+          <span style={{ marginLeft: "var(--space-2)" }}>入口端口规则</span>
+        </button>
+        <button
+          className={`tab-btn primary-button ${activeTab === "groups" ? "" : "ghost-button"}`}
+          onClick={() => setActiveTab("groups")}
+          style={{ borderRadius: "var(--radius-lg)" }}
+        >
+          <Icon name="search" />
+          <span style={{ marginLeft: "var(--space-2)" }}>出站策略组</span>
+        </button>
+        <button
+          className={`tab-btn primary-button ${activeTab === "proxies" ? "" : "ghost-button"}`}
+          onClick={() => setActiveTab("proxies")}
+          style={{ borderRadius: "var(--radius-lg)" }}
+        >
+          <Icon name="play" />
+          <span style={{ marginLeft: "var(--space-2)" }}>节点管理器</span>
+        </button>
+      </div>
 
-          <div className="search-bar">
-            <Icon name="search" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.currentTarget.value)}
-              placeholder="搜索名称或国家代码 (如: us, sg)..."
-              className="search-input"
-              disabled={rules.length === 0}
-            />
-            {searchQuery !== "" ? (
-              <button
-                className="clear-search-btn"
-                type="button"
-                aria-label="清除搜索"
-                onClick={() => setSearchQuery("")}
-              >
-                <Icon name="close" />
+      {/* Rules Tab */}
+      {activeTab === "rules" && (
+        <section className="rules-panel">
+          <div className="toolbar">
+            <div className="toolbar-title">
+              <p className="eyebrow">Listeners</p>
+              <h2>入口端口转发规则</h2>
+            </div>
+            <div className="search-bar">
+              <Icon name="search" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.currentTarget.value)}
+                placeholder="搜索规则或绑定的组..."
+                className="search-input"
+              />
+              {searchQuery && (
+                <button className="clear-search-btn" onClick={() => setSearchQuery("")}>
+                  <Icon name="close" />
+                </button>
+              )}
+            </div>
+            <div className="toolbar-actions">
+              <button className="ghost-button" onClick={toggleSelectAll} disabled={filteredRules.length === 0 || isBusy}>
+                <Icon name="check" />
               </button>
-            ) : null}
+              <button className="ghost-button" onClick={() => void toggleSelectedRulesEnabled(true)} disabled={selectedRuleIds.length === 0 || isBusy} title="批量启用">
+                <Icon name="play" />
+              </button>
+              <button className="ghost-button" onClick={() => void toggleSelectedRulesEnabled(false)} disabled={selectedRuleIds.length === 0 || isBusy} title="批量停用">
+                <Icon name="stop" />
+              </button>
+              <button className="ghost-button" onClick={openCreateRuleModal} disabled={isBusy} title="添加规则">
+                <Icon name="plus" />
+              </button>
+              <button className="ghost-button" onClick={() => setBatchAddOpen(true)} disabled={isBusy} title="批量导入">
+                <Icon name="layers" />
+              </button>
+              <button className="ghost-button" onClick={() => void checkSelectedRulesIp()} disabled={selectedRuleIds.length === 0 || isBusy} title="批量测速">
+                <Icon name="scan" />
+              </button>
+              <button className="danger-button" onClick={handleDeleteSelectedRules} disabled={selectedRuleIds.length === 0 || isBusy}>
+                <Icon name="delete" />
+              </button>
+            </div>
           </div>
 
-          <div className="toolbar-actions">
-            <button className="ghost-button" type="button" onClick={toggleSelectAll} disabled={filteredRules.length === 0 || isBusy}>
-              <Icon name="check" />
-              {/* <span>{allSelected ? "取消全选" : "全选"}</span> */}
-            </button>
-            <button
-              className="ghost-button"
-              type="button"
-              onClick={() => void toggleSelectedRulesEnabled()}
-              disabled={selectedCount === 0 || isBusy}
-            >
-              <Icon name={selectedToggleIcon} />
-              {/* <span>{selectedToggleLabel}</span> */}
-            </button>
-            <button className="ghost-button" type="button" onClick={openCreateRuleModal} disabled={isBusy} title="新建规则">
-              <Icon name="plus" />
-              {/* <span>新建规则</span> */}
-            </button>
-            <button className="ghost-button" type="button" onClick={openBatchAddModal} disabled={isBusy} title="批量添加规则">
-              <Icon name="layers" />
-              {/* <span>批量添加</span> */}
-            </button>
-            <button
-              className="ghost-button"
-              type="button"
-              onClick={() => void checkSelectedRulesIp()}
-              disabled={selectedCount === 0 || isBusy}
-              title="批量检测出口 IP"
-            >
-              <Icon name="scan" />
-              {/* <span>批量检测</span> */}
-            </button>
-            <button className="danger-button" type="button" onClick={deleteSelectedRules} disabled={selectedCount === 0 || isBusy}>
-              <Icon name="delete" />
-              {/* <span>删除所选</span> */}
-            </button>
-          </div>
-        </div>
+          {paginatedRules.length > 0 ? (
+            <div className="rule-list">
+              {paginatedRules.map((rule) => {
+                const groupObj = appState.groups.find((g) => g.id === rule.groupId);
+                const inboundCopyKey = `${rule.id}-inbound-link`;
+                const inboundUrl = buildInboundProxyUrl(rule);
+                const isChecking = busyAction === `ip-${rule.id}` || checkingRuleIds.includes(rule.id);
 
-        {paginatedRules.length > 0 ? (
-          <div className="rule-list">
-            {paginatedRules.map((rule) => {
-              const inboundAddress = formatLocalInboundAddress(rule.inbound.listen, rule.inbound.port);
-              const outboundAddress = getOutboundAddress(rule.outbound);
-              const outboundWarnings = getOutboundImportWarnings(rule.outbound);
-              const inboundCopyKey = `${rule.id}-inbound`;
-              const inboundProxyUrl = buildInboundProxyUrl(rule);
-              const ipCheck = rule.ipCheck;
-              const isCheckingIp = busyAction === `ip-${rule.id}` || checkingRuleIds.includes(rule.id);
-              const speeds = trafficSpeeds[rule.id];
-              const totalSpeed = (speeds?.uplinkSpeed ?? 0) + (speeds?.downlinkSpeed ?? 0);
-
-              return (
-                <article className={`rule-card ${isRuleSelected(rule.id) ? "is-selected" : ""}`} key={rule.id}>
-                  <label className="select-box" aria-label={`选择 ${rule.remark}`}>
-                    <input
-                      type="checkbox"
-                      checked={isRuleSelected(rule.id)}
-                      onChange={() => toggleRuleSelection(rule.id)}
-                      disabled={isBusy}
-                    />
-                    <span></span>
-                  </label>
-
-                  <div className="rule-main">
-                    <div className="rule-row">
-                      <div className="rule-identity">
-                        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-                          <span
-                            className={`status-dot ${
-                              !runtimeStatus.running || !rule.enabled
-                                ? "is-inactive"
-                                : totalSpeed > 0
-                                ? "is-active"
-                                : "is-idle"
-                            }`}
-                            title={
-                              !runtimeStatus.running
-                                ? "未运行 (核心已停止)"
-                                : !rule.enabled
-                                ? "已停用"
-                                : totalSpeed > 0
-                                ? "运行中"
-                                : "已启用 (空闲)"
-                            }
-                            aria-label={
-                              !runtimeStatus.running
-                                ? "未运行 (核心已停止)"
-                                : !rule.enabled
-                                ? "已停用"
-                                : totalSpeed > 0
-                                ? "运行中"
-                                : "已启用 (空闲)"
-                            }
-                          />
-                          <h3>{rule.remark}</h3>
-                        </div>
-                        {rule.enabled && (
-                          <div className="traffic-stats-vertical" title="实时上传/下载速度">
-                            <div className="traffic-speed-item uplink">
-                              <span className="arrow">↑</span>
-                              <span className="value">{formatSpeed(speeds?.uplinkSpeed ?? 0)}</span>
-                            </div>
-                            <div className="traffic-speed-item downlink">
-                              <span className="arrow">↓</span>
-                              <span className="value">{formatSpeed(speeds?.downlinkSpeed ?? 0)}</span>
-                            </div>
+                return (
+                  <article className={`rule-card ${isRuleSelected(rule.id) ? "is-selected" : ""}`} key={rule.id}>
+                    <label className="select-box">
+                      <input
+                        type="checkbox"
+                        checked={isRuleSelected(rule.id)}
+                        onChange={() => toggleRuleSelection(rule.id)}
+                        disabled={isBusy}
+                      />
+                      <span></span>
+                    </label>
+                    <div className="rule-main">
+                      <div className="rule-row">
+                        <div className="rule-identity">
+                          <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                            <span className={`status-dot ${!runtimeStatus.running || !rule.enabled ? "is-inactive" : "is-active"}`} />
+                            <h3>{rule.name}</h3>
                           </div>
-                        )}
-                      </div>
-
-                      <div className="endpoint-line local">
-                        <strong>{formatInboundProtocol(rule.inbound.protocol)}</strong>
-                        <span>{inboundAddress}</span>
-                        <button
-                          className="copy-button compact-copy"
-                          type="button"
-                          aria-label={`复制 ${rule.remark} 本地入口代理链接`}
-                          title={copiedKey === inboundCopyKey ? "已复制" : "复制链接"}
-                          onClick={() => void copyToClipboard(inboundCopyKey, inboundProxyUrl)}
-                          disabled={isBusy}
-                        >
-                          <Icon name="copy" />
-                        </button>
-                      </div>
-
-                      <div className="endpoint-line outbound">
-                        <strong>{formatOutboundProtocol(rule.outbound.protocol)}</strong>
-                        <span>{outboundAddress}</span>
-                      </div>
-
-                      {outboundWarnings.length > 0 ? <p className="modal-description">导入提示：{outboundWarnings.join("；")}</p> : null}
-
-                      <div className="ip-check-panel">
-                        <div className="ip-check-result">
-                          <span className="ip-flag">{formatCountryFlag(ipCheck?.country ?? null)}</span>
-                          <span className="ip-address">{ipCheck?.ip ?? "未检查"}</span>
                         </div>
-                        <button
-                          className="copy-button compact-copy ip-check-button"
-                          type="button"
-                          onClick={() => void checkRuleIp(rule)}
-                          disabled={isBusy || !rule.enabled}
-                        >
-                          {isCheckingIp ? "检查中" : "IP 检查"}
-                        </button>
-                      </div>
 
-                      <div className="rule-actions" aria-label={`${rule.remark} 操作`}>
-                        <button
-                          className="small-icon-button"
-                          type="button"
-                          aria-label={`${rule.remark} 流量统计详情`}
-                          title="流量统计详情"
-                          onClick={() => openStatsDetailsModal(rule)}
-                          disabled={isBusy}
-                        >
-                          <Icon name="info" />
-                        </button>
-                        <button
-                          className="small-icon-button"
-                          type="button"
-                          aria-label={`复制 ${rule.remark}`}
-                          title="复制"
-                          onClick={() => void handleCopy(rule)}
-                          disabled={isBusy}
-                        >
-                          <Icon name="copy" />
-                        </button>
-                        <button
-                          className="small-icon-button"
-                          type="button"
-                          aria-label={`编辑 ${rule.remark}`}
-                          title="编辑"
-                          onClick={() => openEditRuleModal(rule)}
-                          disabled={isBusy}
-                        >
-                          <Icon name="edit" />
-                        </button>
-                        <button
-                          className="small-icon-button danger"
-                          type="button"
-                          aria-label={`删除 ${rule.remark}`}
-                          title="删除"
-                          onClick={() => handleDelete(rule)}
-                          disabled={isBusy}
-                        >
-                          <Icon name="delete" />
-                        </button>
+                        <div className="endpoint-line local">
+                          <strong>{rule.inboundType.toUpperCase()}</strong>
+                          <span>{formatLocalInboundAddress(rule.listen, rule.port)}</span>
+                          <button
+                            className="copy-button compact-copy"
+                            title={copiedKey === inboundCopyKey ? "已复制" : "复制链接"}
+                            onClick={() => void copyToClipboard(inboundCopyKey, inboundUrl)}
+                          >
+                            <Icon name="copy" />
+                          </button>
+                        </div>
+
+                        <div className="endpoint-line outbound" style={{ flex: 1.5 }}>
+                          <strong>策略出口</strong>
+                          <span style={{ color: "var(--color-accent-2)", fontWeight: 700 }}>
+                            {groupObj ? groupObj.name : "未绑定组"}
+                          </span>
+                        </div>
+
+                        <div className="ip-check-panel">
+                          <div className="ip-check-result">
+                            <span className="ip-flag">{formatCountryFlag(rule.ipCheck?.country ?? null)}</span>
+                            <span className="ip-address">{rule.ipCheck?.ip ?? "未检测"}</span>
+                          </div>
+                          <button
+                            className="copy-button compact-copy ip-check-button"
+                            onClick={() => void checkRuleIp(rule)}
+                            disabled={isBusy || !rule.enabled}
+                          >
+                            {isChecking ? "检测中" : "IP检测"}
+                          </button>
+                        </div>
+
+                        <div className="rule-actions">
+                          <button className="small-icon-button" onClick={() => void toggleRuleEnabled(rule)} disabled={isBusy} title={rule.enabled ? "停用" : "启用"}>
+                            <Icon name={rule.enabled ? "stop" : "play"} />
+                          </button>
+                          <button className="small-icon-button" onClick={() => void handleDuplicateRule(rule.id)} disabled={isBusy} title="复制">
+                            <Icon name="copy" />
+                          </button>
+                          <button className="small-icon-button" onClick={() => openEditRuleModal(rule)} disabled={isBusy} title="编辑">
+                            <Icon name="edit" />
+                          </button>
+                          <button className="small-icon-button danger" onClick={() => void handleDeleteRule(rule.id)} disabled={isBusy} title="删除">
+                            <Icon name="delete" />
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        ) : null}
-
-        {rules.length === 0 ? (
-          <div className="empty-state">
-            <Icon name="scan" />
-            <h3>暂无规则</h3>
-            <p>点击“新建规则”添加一条代理入口，保存后会写入后端状态。</p>
-          </div>
-        ) : null}
-
-        {rules.length > 0 && filteredRules.length === 0 ? (
-          <div className="empty-state">
-            <Icon name="search" />
-            <h3>没有找到匹配的规则</h3>
-            <p>尝试更换搜索关键词，或者一键清除搜索条件。</p>
-            <button
-              className="ghost-button"
-              type="button"
-              style={{ marginTop: "var(--space-3)" }}
-              onClick={() => setSearchQuery("")}
-            >
-              清除搜索
-            </button>
-          </div>
-        ) : null}
-
-        {filteredRules.length > 0 && totalPages > 1 ? (
-          <div className="pagination-bar">
-            <div className="pagination-info">
-              显示第 {(currentPage - 1) * itemsPerPage + 1} - {Math.min(currentPage * itemsPerPage, filteredRules.length)} 条，共 {filteredRules.length} 条
+                  </article>
+                );
+              })}
             </div>
-            <div className="pagination-actions">
-              <button
-                className="ghost-button pagination-btn"
-                type="button"
-                onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
-                disabled={currentPage === 1}
-              >
-                <span>上一页</span>
-              </button>
+          ) : (
+            <div className="empty-state">
+              <Icon name="layers" />
+              <h3>没有规则</h3>
+              <p>请点击右侧“新建规则”按钮，为指纹浏览器新建转发端口。</p>
+            </div>
+          )}
 
-              <div className="pagination-pages">
-                {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => {
-                  const isCurrent = page === currentPage;
-                  return (
-                    <button
-                      key={page}
-                      className={isCurrent ? "primary-button pagination-page-btn" : "ghost-button pagination-page-btn"}
-                      type="button"
-                      onClick={() => setCurrentPage(page)}
-                    >
-                      {page}
-                    </button>
-                  );
-                })}
+          {filteredRules.length > 0 && totalPages > 1 ? (
+            <div className="pagination-bar" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "var(--space-3) var(--space-5)", background: "rgba(255, 255, 255, 0.03)", borderRadius: "0 0 var(--radius-lg) var(--radius-lg)", borderTop: "1px solid rgba(255, 255, 255, 0.05)" }}>
+              <div className="pagination-info" style={{ fontSize: "0.85rem", color: "var(--color-ink-weak)" }}>
+                显示第 {(currentPage - 1) * itemsPerPage + 1} - {Math.min(currentPage * itemsPerPage, filteredRules.length)} 条，共 {filteredRules.length} 条
               </div>
+              <div className="pagination-actions" style={{ display: "flex", gap: "var(--space-2)", alignItems: "center" }}>
+                <button
+                  className="ghost-button pagination-btn"
+                  type="button"
+                  onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+                  disabled={currentPage === 1}
+                >
+                  <span>上一页</span>
+                </button>
 
-              <button
-                className="ghost-button pagination-btn"
-                type="button"
-                onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
-                disabled={currentPage === totalPages}
-              >
-                <span>下一页</span>
+                <div className="pagination-pages" style={{ display: "flex", gap: "4px" }}>
+                  {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => {
+                    const isCurrent = page === currentPage;
+                    return (
+                      <button
+                        key={page}
+                        className={isCurrent ? "primary-button pagination-page-btn" : "ghost-button pagination-page-btn"}
+                        type="button"
+                        onClick={() => setCurrentPage(page)}
+                        style={{ minWidth: "32px", padding: "4px 8px" }}
+                      >
+                        {page}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <button
+                  className="ghost-button pagination-btn"
+                  type="button"
+                  onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+                  disabled={currentPage === totalPages}
+                >
+                  <span>下一页</span>
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </section>
+      )}
+
+      {/* Groups Tab */}
+      {activeTab === "groups" && (
+        <section className="rules-panel">
+          <div className="toolbar">
+            <div className="toolbar-title">
+              <p className="eyebrow">Proxy Groups</p>
+              <h2>节点出站策略组</h2>
+            </div>
+            <div className="toolbar-actions">
+              <button className="ghost-button" onClick={openCreateGroupModal} disabled={isBusy} title="新建策略组">
+                <Icon name="plus" />
+                <span style={{ marginLeft: "var(--space-2)" }}>新建组</span>
               </button>
             </div>
           </div>
-        ) : null}
-      </section>
 
-      {ruleModal !== null ? (
+          {appState.groups.length > 0 ? (
+            <div className="rule-list">
+              {appState.groups.map((group) => {
+                const affectedRules = appState.rules.filter((r) => r.groupId === group.id);
+
+                return (
+                  <article className="rule-card" key={group.id} style={{ padding: "var(--space-4) var(--space-5)" }}>
+                    <div className="rule-main" style={{ width: "100%" }}>
+                      <div className="rule-row" style={{ flexWrap: "wrap", gap: "var(--space-4)" }}>
+                        <div style={{ minWidth: "180px" }}>
+                          <h3 style={{ fontSize: "1.1rem", color: "var(--color-ink)" }}>{group.name}</h3>
+                          <span className="eyebrow">{group.groupType.toUpperCase()}</span>
+                        </div>
+
+                        <div style={{ flex: 2, minWidth: "250px" }}>
+                          <strong style={{ display: "block", fontSize: "0.8rem", color: "var(--color-ink-weak)", marginBottom: "var(--space-1)" }}>成员节点</strong>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-1)" }}>
+                            {group.proxies.map((p, idx) => (
+                              <span key={idx} style={{ background: "var(--color-field)", color: "var(--color-ink)", padding: "2px 8px", borderRadius: "var(--radius-md)", fontSize: "0.8rem" }}>
+                                {p}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div style={{ minWidth: "150px" }}>
+                          <span style={{ fontSize: "0.85rem", color: "var(--color-ink-weak)" }}>
+                            关联规则: {affectedRules.length} 个
+                          </span>
+                        </div>
+
+                        <div className="rule-actions">
+                          <button className="small-icon-button" onClick={() => openEditGroupModal(group)} disabled={isBusy} title="编辑">
+                            <Icon name="edit" />
+                          </button>
+                          <button className="small-icon-button danger" onClick={() => void triggerDeleteGroup(group)} disabled={isBusy} title="删除">
+                            <Icon name="delete" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <Icon name="search" />
+              <h3>暂无策略组</h3>
+              <p>可以创建一个策略组，将若干个代理服务器归入同一组中。</p>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Proxies Tab */}
+      {activeTab === "proxies" && (
+        <section className="rules-panel">
+          <div className="toolbar">
+            <div className="toolbar-title">
+              <p className="eyebrow">Proxy Nodes</p>
+              <h2>上游代理出站节点</h2>
+            </div>
+            <div className="toolbar-actions">
+              <button className="ghost-button" onClick={openCreateNodeModal} disabled={isBusy} title="新建节点">
+                <Icon name="plus" />
+                <span style={{ marginLeft: "var(--space-2)" }}>新建节点</span>
+              </button>
+            </div>
+          </div>
+
+          {appState.proxies.length > 0 ? (
+            <div className="rule-list">
+              {appState.proxies.map((node) => {
+                const address = getOutboundAddress(node.config);
+                const warningList = node.config.protocol !== "socks" ? node.config.importSource?.warnings ?? [] : [];
+
+                return (
+                  <article className="rule-card" key={node.id} style={{ padding: "var(--space-4) var(--space-5)" }}>
+                    <div className="rule-main" style={{ width: "100%" }}>
+                      <div className="rule-row">
+                        <div style={{ minWidth: "150px" }}>
+                          <h3 style={{ fontSize: "1.1rem", color: "var(--color-ink)" }}>{node.name}</h3>
+                          <span style={{ display: "inline-block", background: "var(--color-field-strong)", color: "var(--color-accent)", padding: "1px 6px", borderRadius: "4px", fontSize: "0.75rem", fontWeight: 700, marginTop: "4px" }}>
+                            {formatOutboundProtocol(node.config.protocol)}
+                          </span>
+                        </div>
+
+                        <div style={{ flex: 2 }}>
+                          <strong style={{ display: "block", fontSize: "0.8rem", color: "var(--color-ink-weak)" }}>服务器地址</strong>
+                          <span style={{ fontFamily: "monospace", fontSize: "0.95rem" }}>{address}</span>
+                          {warningList.length > 0 && (
+                            <p style={{ color: "var(--color-accent-2)", fontSize: "0.75rem", marginTop: "2px" }}>
+                              链接提示：{warningList.join("；")}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="rule-actions">
+                          <button className="small-icon-button" onClick={() => openEditNodeModal(node)} disabled={isBusy} title="编辑">
+                            <Icon name="edit" />
+                          </button>
+                          <button className="small-icon-button danger" onClick={() => void triggerDeleteNode(node)} disabled={isBusy} title="删除">
+                            <Icon name="delete" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <Icon name="play" />
+              <h3>暂无上游出口节点</h3>
+              <p>导入或手动增加一些 SOCKS5 / Shadowsocks / VLESS / Trojan 代理出口吧。</p>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* MODAL: ListenerRule Add/Edit */}
+      {ruleModal && (
         <div className="modal-layer" role="presentation">
-          <section
-            className="rule-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="rule-modal-title"
-            aria-describedby="rule-modal-description"
-          >
-            <form onSubmit={(event) => void handleRuleSubmit(event)}>
+          <section className="rule-modal" role="dialog" aria-modal="true">
+            <form onSubmit={(e) => void handleRuleSubmit(e)}>
               <div className="modal-header">
                 <div>
                   <p className="eyebrow">Rule Editor</p>
-                  <h2 id="rule-modal-title">{ruleModal.mode === "create" ? "新建代理规则" : "编辑代理规则"}</h2>
-                  <p id="rule-modal-description" className="modal-description">
-                    在第二层面板中配置本地入口与上游出口，提交后会保存到后端状态并同步运行中的核心。
-                  </p>
+                  <h2>{ruleModal.mode === "create" ? "新建入口转发端口" : "编辑入口端口规则"}</h2>
+                  <p className="modal-description">配置本地浏览器连接的监听规则，并绑定指定出站代理策略组。</p>
                 </div>
-                <button className="small-icon-button" type="button" aria-label="关闭规则编辑器" onClick={closeRuleModal} disabled={isBusy}>
+                <button className="small-icon-button" type="button" onClick={() => setRuleModal(null)}>
                   <Icon name="close" />
                 </button>
               </div>
 
               <div className="modal-body">
-                <section className="form-section" aria-labelledby="basic-fields-title">
-                  <div className="section-heading">
-                    <h3 id="basic-fields-title">规则信息</h3>
-                    <span>01</span>
-                  </div>
+                <section className="form-section">
                   <div className="form-grid">
                     <label className="field wide-field">
-                      <span>备注</span>
+                      <span>入口名称</span>
                       <input
                         type="text"
-                        value={ruleModal.draft.remark}
-                        onChange={(event) => updateRuleDraft("remark", event.currentTarget.value)}
-                        placeholder="例如：指纹浏览器 A / 市场调研"
+                        value={ruleModal.draft.name}
+                        onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, name: e.currentTarget.value } })}
+                        placeholder="例如：浏览器账号 01"
                         required
-                        disabled={isBusy}
                       />
                     </label>
-                    <label className="toggle-field">
-                      <input
-                        type="checkbox"
-                        checked={ruleModal.draft.enabled}
-                        onChange={(event) => updateRuleDraft("enabled", event.currentTarget.checked)}
-                        disabled={isBusy}
-                      />
-                      <span>启用规则</span>
-                    </label>
-                  </div>
-                </section>
 
-                <section className="form-section" aria-labelledby="inbound-fields-title">
-                  <div className="section-heading">
-                    <h3 id="inbound-fields-title">本地入口</h3>
-                    <span>02</span>
-                  </div>
-                  <div className="form-grid">
                     <label className="field">
-                      <span>入口协议</span>
+                      <span>入口类型</span>
                       <select
-                        value={ruleModal.draft.inboundProtocol}
-                        onChange={(event) => {
-                          if (isInboundProtocol(event.currentTarget.value)) {
-                            updateRuleDraft("inboundProtocol", event.currentTarget.value);
-                          }
-                        }}
-                        disabled={isBusy}
+                        value={ruleModal.draft.inboundType}
+                        onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, inboundType: e.currentTarget.value } })}
                       >
-                        {inboundProtocolOptions.map((protocol) => (
-                          <option value={protocol} key={protocol}>
-                            {formatInboundProtocol(protocol)}
-                          </option>
+                        {inboundTypeOptions.map((opt) => (
+                          <option value={opt.value} key={opt.value}>{opt.label}</option>
                         ))}
                       </select>
                     </label>
+
                     <label className="field">
                       <span>监听地址</span>
                       <input
                         type="text"
-                        value={ruleModal.draft.inboundListen}
-                        onChange={(event) => updateRuleDraft("inboundListen", event.currentTarget.value)}
-                        placeholder="127.0.0.1"
+                        value={ruleModal.draft.listen}
+                        onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, listen: e.currentTarget.value } })}
                         required
-                        disabled={isBusy}
                       />
                     </label>
+
                     <label className="field">
-                      <span>入口端口</span>
+                      <span>本地端口</span>
                       <input
                         type="number"
                         min="1"
                         max="65535"
-                        value={ruleModal.draft.inboundPort}
-                        onChange={(event) => updateRuleDraft("inboundPort", event.currentTarget.value)}
-                        placeholder={ruleModal.mode === "create" ? "留空自动选择" : "50000"}
+                        value={ruleModal.draft.port}
+                        onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, port: e.currentTarget.value } })}
+                        placeholder="留空自动分配"
                         required={ruleModal.mode === "edit"}
-                        disabled={isBusy}
                       />
                     </label>
-                    <div className="auth-disclosure wide-field">
-                      <button className="ghost-button" type="button" onClick={toggleInboundAuthFields} disabled={isBusy}>
-                        {ruleModal.inboundAuthExpanded ? "收起入口认证" : "添加入口认证"}
-                      </button>
-                      <span>默认无认证，仅在浏览器入口需要账号密码时展开。</span>
-                    </div>
-                    {ruleModal.inboundAuthExpanded ? (
-                      <>
-                        <label className="field">
-                          <span>入口用户名</span>
-                          <input
-                            type="text"
-                            value={ruleModal.draft.inboundUsername}
-                            onChange={(event) => updateRuleDraft("inboundUsername", event.currentTarget.value)}
-                            placeholder="留空为无认证"
-                            disabled={isBusy}
-                          />
-                        </label>
-                        <label className="field">
-                          <span>入口密码</span>
-                          <input
-                            type="password"
-                            value={ruleModal.draft.inboundPassword}
-                            onChange={(event) => updateRuleDraft("inboundPassword", event.currentTarget.value)}
-                            placeholder="留空为无认证"
-                            disabled={isBusy}
-                          />
-                        </label>
-                      </>
-                    ) : null}
-                  </div>
-                </section>
 
-                <section className="form-section" aria-labelledby="outbound-fields-title">
-                  <div className="section-heading">
-                    <h3 id="outbound-fields-title">上游出口</h3>
-                    <div className="section-heading-actions">
-                      <button
-                        className="copy-button compact-copy icon-only-copy"
-                        type="button"
-                        aria-label="复制上游出口代理链接"
-                        title={copiedKey === "outbound-draft" && outboundDraftCopyState !== null && !outboundDraftCopyState.disabled ? "已复制" : outboundDraftCopyState?.title ?? "复制上游出口代理链接"}
-                        onClick={() => {
-                          if (outboundDraftCopyState !== null && !outboundDraftCopyState.disabled) {
-                            void copyToClipboard("outbound-draft", outboundDraftCopyState.url);
-                          }
-                        }}
-                        disabled={isBusy || outboundDraftCopyState === null || outboundDraftCopyState.disabled}
-                      >
-                        <Icon name="copy" />
-                      </button>
-                      <span>03</span>
-                    </div>
-                  </div>
-                  <div className="form-grid">
-                    <label className="field wide-field">
-                      <span>代理链接解析</span>
-                      <input
-                        type="text"
-                        value={ruleModal.draft.outboundProxyUrl}
-                        onChange={(event) => void handleOutboundProxyUrlChange(event.currentTarget.value)}
-                        placeholder="socks5://... / vless://... / ss://..."
-                        disabled={isBusy}
-                      />
-                    </label>
                     <label className="field">
-                      <span>出口协议</span>
+                      <span>分配出口策略组</span>
                       <select
-                        value={ruleModal.draft.outboundProtocol}
-                        onChange={(event) => {
-                          if (isOutboundProtocol(event.currentTarget.value)) {
-                            updateRuleDraft("outboundProtocol", event.currentTarget.value);
-                          }
-                        }}
-                        disabled={isBusy}
+                        value={ruleModal.draft.groupId}
+                        onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, groupId: e.currentTarget.value } })}
+                        required
                       >
-                        {outboundProtocolOptions.map((protocol) => (
-                          <option value={protocol} key={protocol}>
-                            {formatOutboundProtocol(protocol)}
-                          </option>
+                        <option value="" disabled>-- 选择出口策略组 --</option>
+                        {appState.groups.map((g) => (
+                          <option value={g.id} key={g.id}>{g.name}</option>
                         ))}
                       </select>
                     </label>
+
+                    <label className="toggle-field wide-field">
+                      <input
+                        type="checkbox"
+                        checked={ruleModal.draft.enabled}
+                        onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, enabled: e.currentTarget.checked } })}
+                      />
+                      <span>启用此入口转发</span>
+                    </label>
+                  </div>
+                </section>
+              </div>
+
+              {ruleFormError && <p className="form-error">{ruleFormError}</p>}
+
+              <div className="modal-footer">
+                <button className="ghost-button" type="button" onClick={() => setRuleModal(null)}>取消</button>
+                <button className="primary-button" type="submit">保存规则</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {/* MODAL: ProxyGroup Add/Edit */}
+      {groupModal && (
+        <div className="modal-layer" role="presentation">
+          <section className="rule-modal" role="dialog" aria-modal="true">
+            <form onSubmit={(e) => void handleGroupSubmit(e)}>
+              <div className="modal-header">
+                <div>
+                  <p className="eyebrow">Group Editor</p>
+                  <h2>{groupModal.mode === "create" ? "新建代理策略组" : "编辑策略组配置"}</h2>
+                  <p className="modal-description">组织代理出站池。用户可在此组包含的节点范围内进行热切换。</p>
+                </div>
+                <button className="small-icon-button" type="button" onClick={() => setGroupModal(null)}>
+                  <Icon name="close" />
+                </button>
+              </div>
+
+              <div className="modal-body">
+                <section className="form-section">
+                  <div className="form-grid">
                     <label className="field wide-field">
-                      <span>{ruleModal.draft.outboundProtocol === "socks" ? "上游主机" : "服务器地址"}</span>
+                      <span>策略组名称</span>
                       <input
                         type="text"
-                        value={ruleModal.draft.outboundHost}
-                        onChange={(event) => updateRuleDraft("outboundHost", event.currentTarget.value)}
-                        placeholder="upstream.proxy.local"
+                        value={groupModal.draft.name}
+                        onChange={(e) => setGroupModal({ ...groupModal, draft: { ...groupModal.draft, name: e.currentTarget.value } })}
+                        placeholder="例如：美国主出口组 / 账号池-A"
                         required
-                        disabled={isBusy}
                       />
                     </label>
+
+                    <label className="field wide-field">
+                      <span>策略组类型</span>
+                      <select
+                        value={groupModal.draft.groupType}
+                        onChange={(e) => setGroupModal({ ...groupModal, draft: { ...groupModal.draft, groupType: e.currentTarget.value } })}
+                      >
+                        <option value="select">手动选择 (Select)</option>
+                      </select>
+                    </label>
+
+                    <div className="field wide-field">
+                      <span style={{ display: "block", marginBottom: "var(--space-2)" }}>选择组内出口成员</span>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "var(--space-2)", maxHeight: "250px", overflowY: "auto", padding: "var(--space-2)", background: "var(--color-field)", borderRadius: "var(--radius-md)" }}>
+                        {/* Builtin proxy options */}
+                        {["DIRECT", "REJECT"].map((builtin) => {
+                          const isChecked = groupModal.draft.proxies.includes(builtin);
+                          return (
+                            <label key={builtin} style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", cursor: "pointer", color: "var(--color-accent-2)" }}>
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={(e) => {
+                                  const list = e.currentTarget.checked
+                                    ? [...groupModal.draft.proxies, builtin]
+                                    : groupModal.draft.proxies.filter(p => p !== builtin);
+                                  setGroupModal({ ...groupModal, draft: { ...groupModal.draft, proxies: list } });
+                                }}
+                              />
+                              <strong>{builtin} (系统直连)</strong>
+                            </label>
+                          );
+                        })}
+                        {appState.proxies.map((node) => {
+                          const isChecked = groupModal.draft.proxies.includes(node.name);
+                          return (
+                            <label key={node.id} style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", cursor: "pointer" }}>
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={(e) => {
+                                  const list = e.currentTarget.checked
+                                    ? [...groupModal.draft.proxies, node.name]
+                                    : groupModal.draft.proxies.filter(p => p !== node.name);
+                                  setGroupModal({ ...groupModal, draft: { ...groupModal.draft, proxies: list } });
+                                }}
+                              />
+                              <span>{node.name}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              </div>
+
+              {groupFormError && <p className="form-error">{groupFormError}</p>}
+
+              <div className="modal-footer">
+                <button className="ghost-button" type="button" onClick={() => setGroupModal(null)}>取消</button>
+                <button className="primary-button" type="submit">保存策略组</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {/* MODAL: ProxyNode Add/Edit */}
+      {nodeModal && (
+        <div className="modal-layer" role="presentation">
+          <section className="rule-modal" role="dialog" aria-modal="true">
+            <form onSubmit={(e) => void handleNodeSubmit(e)}>
+              <div className="modal-header">
+                <div>
+                  <p className="eyebrow">Node Editor</p>
+                  <h2>{nodeModal.mode === "create" ? "添加代理节点" : "编辑代理节点参数"}</h2>
+                  <p className="modal-description">配置上游出站代理。支持从 SOCKS5, Shadowsocks (ss), VLESS, Trojan 的剪贴板链接直接粘贴解析导入。</p>
+                </div>
+                <button className="small-icon-button" type="button" onClick={() => setNodeModal(null)}>
+                  <Icon name="close" />
+                </button>
+              </div>
+
+              <div className="modal-body">
+                <section className="form-section">
+                  <div className="form-grid">
+                    <label className="field wide-field">
+                      <span>代理配置链接解析 (粘贴链接自动导入)</span>
+                      <input
+                        type="text"
+                        value={nodeModal.draft.outboundProxyUrl}
+                        onChange={(e) => void handleNodeLinkImport(e.currentTarget.value)}
+                        placeholder="socks5://... / ss://... / vless://... / trojan://"
+                      />
+                    </label>
+
+                    <label className="field wide-field">
+                      <span>节点名称 (必须唯一)</span>
+                      <input
+                        type="text"
+                        value={nodeModal.draft.name}
+                        onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, name: e.currentTarget.value } })}
+                        placeholder="例如：日本 A 节点"
+                        required
+                      />
+                    </label>
+
                     <label className="field">
-                      <span>上游端口</span>
+                      <span>节点协议</span>
+                      <select
+                        value={nodeModal.draft.protocol}
+                        onChange={(e) => {
+                          if (isOutboundProtocol(e.currentTarget.value)) {
+                            setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, protocol: e.currentTarget.value } });
+                          }
+                        }}
+                      >
+                        {outboundProtocolOptions.map(p => (
+                          <option value={p} key={p}>{formatOutboundProtocol(p)}</option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="field wide-field" style={{ gridColumn: "span 2" }}>
+                      <span>服务器地址</span>
+                      <input
+                        type="text"
+                        value={nodeModal.draft.address}
+                        onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, address: e.currentTarget.value } })}
+                        placeholder="node.upstream.domain"
+                        required
+                      />
+                    </label>
+
+                    <label className="field">
+                      <span>连接端口</span>
                       <input
                         type="number"
                         min="1"
                         max="65535"
-                        value={ruleModal.draft.outboundPort}
-                        onChange={(event) => updateRuleDraft("outboundPort", event.currentTarget.value)}
+                        value={nodeModal.draft.port}
+                        onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, port: e.currentTarget.value } })}
                         required
-                        disabled={isBusy}
                       />
                     </label>
-                    {ruleModal.draft.outboundProtocol === "socks" ? (
+
+                    {/* SOCKS specific */}
+                    {nodeModal.draft.protocol === "socks" && (
                       <>
                         <label className="field">
-                          <span>上游用户名</span>
+                          <span>认证用户名</span>
                           <input
                             type="text"
-                            value={ruleModal.draft.outboundUsername}
-                            onChange={(event) => updateRuleDraft("outboundUsername", event.currentTarget.value)}
-                            placeholder="留空为无认证"
-                            disabled={isBusy}
+                            value={nodeModal.draft.socksUsername}
+                            onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, socksUsername: e.currentTarget.value } })}
+                            placeholder="可选"
                           />
                         </label>
-                        <label className="field wide-field">
-                          <span>上游密码</span>
+                        <label className="field">
+                          <span>认证密码</span>
                           <input
                             type="password"
-                            value={ruleModal.draft.outboundPassword}
-                            onChange={(event) => updateRuleDraft("outboundPassword", event.currentTarget.value)}
-                            placeholder="留空为无认证"
-                            disabled={isBusy}
+                            value={nodeModal.draft.socksPassword}
+                            onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, socksPassword: e.currentTarget.value } })}
+                            placeholder="可选"
                           />
                         </label>
                       </>
-                    ) : null}
-                    {ruleModal.draft.outboundProtocol === "vless" ? (
+                    )}
+
+                    {/* Shadowsocks specific */}
+                    {nodeModal.draft.protocol === "shadowsocks" && (
+                      <>
+                        <label className="field wide-field">
+                          <span>加密算法</span>
+                          <input
+                            list="shadowsocks-ciphers"
+                            type="text"
+                            value={nodeModal.draft.shadowsocksMethod}
+                            onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, shadowsocksMethod: e.currentTarget.value } })}
+                            required
+                          />
+                          <datalist id="shadowsocks-ciphers">
+                            {shadowsocksMethodOptions.map(m => <option value={m} key={m} />)}
+                          </datalist>
+                        </label>
+                        <label className="field wide-field">
+                          <span>节点密码</span>
+                          <input
+                            type="password"
+                            value={nodeModal.draft.shadowsocksPassword}
+                            onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, shadowsocksPassword: e.currentTarget.value } })}
+                            required
+                          />
+                        </label>
+                      </>
+                    )}
+
+                    {/* VLESS specific */}
+                    {nodeModal.draft.protocol === "vless" && (
                       <>
                         <label className="field wide-field">
                           <span>UUID / ID</span>
-                          <input type="text" value={ruleModal.draft.vlessId} onChange={(event) => updateRuleDraft("vlessId", event.currentTarget.value)} placeholder="5783a3e7-e373-51cd-8642-c83782b807c5" required disabled={isBusy} />
+                          <input
+                            type="text"
+                            value={nodeModal.draft.vlessId}
+                            onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, vlessId: e.currentTarget.value } })}
+                            placeholder="5783a3e7-e373-51cd-8642-c83782b807c5"
+                            required
+                          />
                         </label>
                         <label className="field">
-                          <span>安全层</span>
-                          <select value={ruleModal.draft.vlessSecurity} onChange={(event) => updateRuleDraft("vlessSecurity", event.currentTarget.value as RuleFormState["vlessSecurity"])} disabled={isBusy}>
-                            <option value="none">无</option>
+                          <span>加密方案</span>
+                          <input
+                            type="text"
+                            value={nodeModal.draft.vlessEncryption}
+                            onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, vlessEncryption: e.currentTarget.value } })}
+                            placeholder="none"
+                            required
+                          />
+                        </label>
+                        <label className="field">
+                          <span>安全传输协议</span>
+                          <select
+                            value={nodeModal.draft.vlessSecurity}
+                            onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, vlessSecurity: e.currentTarget.value as any } })}
+                          >
+                            <option value="none">无安全层</option>
                             <option value="tls">TLS</option>
                             <option value="reality">REALITY</option>
                           </select>
                         </label>
                         <label className="field">
-                          <span>Encryption</span>
-                          <input type="text" value={ruleModal.draft.vlessEncryption} onChange={(event) => updateRuleDraft("vlessEncryption", event.currentTarget.value)} placeholder="none" required disabled={isBusy} />
-                        </label>
-                        <label className="field">
                           <span>Flow</span>
-                          <select value={ruleModal.draft.vlessFlow} onChange={(event) => updateRuleDraft("vlessFlow", event.currentTarget.value as RuleFormState["vlessFlow"])} disabled={isBusy}>
+                          <select
+                            value={nodeModal.draft.vlessFlow}
+                            onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, vlessFlow: e.currentTarget.value as any } })}
+                          >
                             <option value="">无</option>
-                            {vlessFlowOptions.map((flow) => (
-                              <option value={flow} key={flow}>{flow}</option>
-                            ))}
+                            {vlessFlowOptions.map(f => <option value={f} key={f}>{f}</option>)}
                           </select>
                         </label>
                         <label className="field">
-                          <span>Level</span>
-                          <input type="number" min="0" step="1" value={ruleModal.draft.vlessLevel} onChange={(event) => updateRuleDraft("vlessLevel", event.currentTarget.value)} placeholder="默认 0" disabled={isBusy} />
-                        </label>
-                        <label className="field">
-                          <span>传输协议</span>
-                          <select value={ruleModal.draft.vlessTransportKind} onChange={(event) => updateRuleDraft("vlessTransportKind", event.currentTarget.value as "tcp" | "ws")} disabled={isBusy}>
+                          <span>网络传输</span>
+                          <select
+                            value={nodeModal.draft.vlessTransportKind}
+                            onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, vlessTransportKind: e.currentTarget.value as any } })}
+                          >
                             <option value="tcp">TCP</option>
                             <option value="ws">WebSocket (ws)</option>
                           </select>
                         </label>
-                        {ruleModal.draft.vlessTransportKind === "ws" ? (
+
+                        {nodeModal.draft.vlessTransportKind === "ws" && (
                           <>
-                            <label className="field wide-field">
-                              <span>WebSocket 路径 (Path)</span>
-                              <input type="text" value={ruleModal.draft.vlessTransportPath} onChange={(event) => updateRuleDraft("vlessTransportPath", event.currentTarget.value)} placeholder="/" disabled={isBusy} />
+                            <label className="field">
+                              <span>WS Path</span>
+                              <input
+                                type="text"
+                                value={nodeModal.draft.vlessTransportPath}
+                                onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, vlessTransportPath: e.currentTarget.value } })}
+                                placeholder="/"
+                              />
                             </label>
-                            <label className="field wide-field">
-                              <span>WebSocket 伪装域名 (Host)</span>
-                              <input type="text" value={ruleModal.draft.vlessTransportHost} onChange={(event) => updateRuleDraft("vlessTransportHost", event.currentTarget.value)} placeholder="sni.example.com" disabled={isBusy} />
+                            <label className="field">
+                              <span>WS Host</span>
+                              <input
+                                type="text"
+                                value={nodeModal.draft.vlessTransportHost}
+                                onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, vlessTransportHost: e.currentTarget.value } })}
+                                placeholder="sni.domain.com"
+                              />
                             </label>
                           </>
-                        ) : null}
-                        {ruleModal.draft.vlessSecurity !== "none" ? (
+                        )}
+
+                        {nodeModal.draft.vlessSecurity !== "none" && (
                           <>
-                            <label className="field wide-field">
-                              <span>Server Name / SNI</span>
-                              <input type="text" value={ruleModal.draft.vlessServerName} onChange={(event) => updateRuleDraft("vlessServerName", event.currentTarget.value)} placeholder="example.com" disabled={isBusy} />
+                            <label className="field">
+                              <span>ServerName (SNI)</span>
+                              <input
+                                type="text"
+                                value={nodeModal.draft.vlessServerName}
+                                onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, vlessServerName: e.currentTarget.value } })}
+                                placeholder="domain.com"
+                              />
                             </label>
                             <label className="field">
                               <span>Fingerprint</span>
-                              <input type="text" value={ruleModal.draft.vlessFingerprint} onChange={(event) => updateRuleDraft("vlessFingerprint", event.currentTarget.value)} placeholder="chrome" disabled={isBusy} />
+                              <input
+                                type="text"
+                                value={nodeModal.draft.vlessFingerprint}
+                                onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, vlessFingerprint: e.currentTarget.value } })}
+                                placeholder="chrome"
+                              />
                             </label>
-                            {ruleModal.draft.vlessSecurity === "tls" ? (
-                              <label className="toggle-field">
-                                <input type="checkbox" checked={ruleModal.draft.vlessAllowInsecure} onChange={(event) => updateRuleDraft("vlessAllowInsecure", event.currentTarget.checked)} disabled={isBusy} />
-                                <span>允许不安全证书 (allowInsecure)</span>
-                              </label>
-                            ) : null}
                           </>
-                        ) : null}
-                        {ruleModal.draft.vlessSecurity === "reality" ? (
+                        )}
+
+                        {nodeModal.draft.vlessSecurity === "tls" && (
+                          <label className="toggle-field wide-field">
+                            <input
+                              type="checkbox"
+                              checked={nodeModal.draft.vlessAllowInsecure}
+                              onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, vlessAllowInsecure: e.currentTarget.checked } })}
+                            />
+                            <span>忽略证书校验错误 (skip-cert-verify)</span>
+                          </label>
+                        )}
+
+                        {nodeModal.draft.vlessSecurity === "reality" && (
                           <>
                             <label className="field wide-field">
-                              <span>Reality Public Key</span>
-                              <input type="text" value={ruleModal.draft.vlessRealityPublicKey} onChange={(event) => updateRuleDraft("vlessRealityPublicKey", event.currentTarget.value)} required disabled={isBusy} />
+                              <span>REALITY Public Key</span>
+                              <input
+                                type="text"
+                                value={nodeModal.draft.vlessRealityPublicKey}
+                                onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, vlessRealityPublicKey: e.currentTarget.value } })}
+                                required
+                              />
                             </label>
                             <label className="field">
-                              <span>Reality Short ID</span>
-                              <input type="text" value={ruleModal.draft.vlessRealityShortId} onChange={(event) => updateRuleDraft("vlessRealityShortId", event.currentTarget.value)} disabled={isBusy} />
-                            </label>
-                            <label className="field wide-field">
-                              <span>Reality Spider X</span>
-                              <input type="text" value={ruleModal.draft.vlessRealitySpiderX} onChange={(event) => updateRuleDraft("vlessRealitySpiderX", event.currentTarget.value)} placeholder="/" disabled={isBusy} />
+                              <span>REALITY Short ID</span>
+                              <input
+                                type="text"
+                                value={nodeModal.draft.vlessRealityShortId}
+                                onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, vlessRealityShortId: e.currentTarget.value } })}
+                              />
                             </label>
                           </>
-                        ) : null}
+                        )}
                       </>
-                    ) : null}
-                    {ruleModal.draft.outboundProtocol === "shadowsocks" ? (
+                    )}
+
+                    {/* Trojan specific */}
+                    {nodeModal.draft.protocol === "trojan" && (
                       <>
                         <label className="field wide-field">
-                          <span>加密方法</span>
-                          <input list="shadowsocks-methods" type="text" value={ruleModal.draft.shadowsocksMethod} onChange={(event) => updateRuleDraft("shadowsocksMethod", event.currentTarget.value)} required disabled={isBusy} />
-                          <datalist id="shadowsocks-methods">
-                            {shadowsocksMethodOptions.map((method) => <option value={method} key={method} />)}
-                          </datalist>
-                        </label>
-                        <label className="field wide-field">
-                          <span>Shadowsocks 密码</span>
-                          <input type="password" value={ruleModal.draft.shadowsocksPassword} onChange={(event) => updateRuleDraft("shadowsocksPassword", event.currentTarget.value)} required disabled={isBusy} />
-                        </label>
-                        <label className="toggle-field">
-                          <input type="checkbox" checked={ruleModal.draft.shadowsocksUot} onChange={(event) => updateRuleDraft("shadowsocksUot", event.currentTarget.checked)} disabled={isBusy} />
-                          <span>启用 UDP over TCP</span>
-                        </label>
-                        {ruleModal.draft.shadowsocksUot ? (
-                          <label className="field">
-                            <span>UoT Version</span>
-                            <select value={ruleModal.draft.shadowsocksUotVersion} onChange={(event) => updateRuleDraft("shadowsocksUotVersion", event.currentTarget.value as RuleFormState["shadowsocksUotVersion"])} disabled={isBusy}>
-                              <option value="">默认</option>
-                              <option value="1">1</option>
-                              <option value="2">2</option>
-                            </select>
-                          </label>
-                        ) : null}
-                      </>
-                    ) : null}
-                    {ruleModal.draft.outboundProtocol === "trojan" ? (
-                      <>
-                        <label className="field wide-field">
-                          <span>Trojan 密码</span>
+                          <span>连接密码</span>
                           <input
                             type="password"
-                            value={ruleModal.draft.trojanPassword}
-                            onChange={(event) => updateRuleDraft("trojanPassword", event.currentTarget.value)}
-                            placeholder="填写密码"
+                            value={nodeModal.draft.trojanPassword}
+                            onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, trojanPassword: e.currentTarget.value } })}
                             required
-                            disabled={isBusy}
                           />
                         </label>
                         <label className="field">
                           <span>安全层</span>
                           <select
-                            value={ruleModal.draft.trojanSecurity}
-                            onChange={(event) => updateRuleDraft("trojanSecurity", event.currentTarget.value as RuleFormState["trojanSecurity"])}
-                            disabled={isBusy}
+                            value={nodeModal.draft.trojanSecurity}
+                            onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, trojanSecurity: e.currentTarget.value as any } })}
                           >
-                            <option value="none">无</option>
+                            <option value="none">无安全层</option>
                             <option value="tls">TLS</option>
                             <option value="reality">REALITY</option>
                           </select>
                         </label>
                         <label className="field">
-                          <span>Email (可选)</span>
-                          <input
-                            type="text"
-                            value={ruleModal.draft.trojanEmail}
-                            onChange={(event) => updateRuleDraft("trojanEmail", event.currentTarget.value)}
-                            placeholder="user@example.com"
-                            disabled={isBusy}
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Level</span>
-                          <input
-                            type="number"
-                            min="0"
-                            step="1"
-                            value={ruleModal.draft.trojanLevel}
-                            onChange={(event) => updateRuleDraft("trojanLevel", event.currentTarget.value)}
-                            placeholder="默认 0"
-                            disabled={isBusy}
-                          />
-                        </label>
-                        <label className="field">
-                          <span>传输协议</span>
-                          <select value={ruleModal.draft.trojanTransportKind} onChange={(event) => updateRuleDraft("trojanTransportKind", event.currentTarget.value as "tcp" | "ws")} disabled={isBusy}>
+                          <span>网络传输</span>
+                          <select
+                            value={nodeModal.draft.trojanTransportKind}
+                            onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, trojanTransportKind: e.currentTarget.value as any } })}
+                          >
                             <option value="tcp">TCP</option>
                             <option value="ws">WebSocket (ws)</option>
                           </select>
                         </label>
-                        {ruleModal.draft.trojanTransportKind === "ws" ? (
+
+                        {nodeModal.draft.trojanTransportKind === "ws" && (
                           <>
-                            <label className="field wide-field">
-                              <span>WebSocket 路径 (Path)</span>
-                              <input type="text" value={ruleModal.draft.trojanTransportPath} onChange={(event) => updateRuleDraft("trojanTransportPath", event.currentTarget.value)} placeholder="/" disabled={isBusy} />
-                            </label>
-                            <label className="field wide-field">
-                              <span>WebSocket 伪装域名 (Host)</span>
-                              <input type="text" value={ruleModal.draft.trojanTransportHost} onChange={(event) => updateRuleDraft("trojanTransportHost", event.currentTarget.value)} placeholder="sni.example.com" disabled={isBusy} />
-                            </label>
-                          </>
-                        ) : null}
-                        {ruleModal.draft.trojanSecurity !== "none" ? (
-                          <>
-                            <label className="field wide-field">
-                              <span>Server Name / SNI</span>
+                            <label className="field">
+                              <span>WS Path</span>
                               <input
                                 type="text"
-                                value={ruleModal.draft.trojanServerName}
-                                onChange={(event) => updateRuleDraft("trojanServerName", event.currentTarget.value)}
-                                placeholder="example.com"
-                                disabled={isBusy}
+                                value={nodeModal.draft.trojanTransportPath}
+                                onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, trojanTransportPath: e.currentTarget.value } })}
+                                placeholder="/"
+                              />
+                            </label>
+                            <label className="field">
+                              <span>WS Host</span>
+                              <input
+                                type="text"
+                                value={nodeModal.draft.trojanTransportHost}
+                                onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, trojanTransportHost: e.currentTarget.value } })}
+                                placeholder="sni.domain.com"
+                              />
+                            </label>
+                          </>
+                        )}
+
+                        {nodeModal.draft.trojanSecurity !== "none" && (
+                          <>
+                            <label className="field">
+                              <span>ServerName (SNI)</span>
+                              <input
+                                type="text"
+                                value={nodeModal.draft.trojanServerName}
+                                onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, trojanServerName: e.currentTarget.value } })}
+                                placeholder="domain.com"
                               />
                             </label>
                             <label className="field">
                               <span>Fingerprint</span>
                               <input
                                 type="text"
-                                value={ruleModal.draft.trojanFingerprint}
-                                onChange={(event) => updateRuleDraft("trojanFingerprint", event.currentTarget.value)}
+                                value={nodeModal.draft.trojanFingerprint}
+                                onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, trojanFingerprint: e.currentTarget.value } })}
                                 placeholder="chrome"
-                                disabled={isBusy}
                               />
                             </label>
-                            {ruleModal.draft.trojanSecurity === "tls" ? (
-                              <label className="toggle-field">
-                                <input
-                                  type="checkbox"
-                                  checked={ruleModal.draft.trojanAllowInsecure}
-                                  onChange={(event) => updateRuleDraft("trojanAllowInsecure", event.currentTarget.checked)}
-                                  disabled={isBusy}
-                                />
-                                <span>允许不安全证书 (allowInsecure)</span>
-                              </label>
-                            ) : null}
                           </>
-                        ) : null}
-                        {ruleModal.draft.trojanSecurity === "reality" ? (
+                        )}
+
+                        {nodeModal.draft.trojanSecurity === "tls" && (
+                          <label className="toggle-field wide-field">
+                            <input
+                              type="checkbox"
+                              checked={nodeModal.draft.trojanAllowInsecure}
+                              onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, trojanAllowInsecure: e.currentTarget.checked } })}
+                            />
+                            <span>忽略证书校验错误 (skip-cert-verify)</span>
+                          </label>
+                        )}
+
+                        {nodeModal.draft.trojanSecurity === "reality" && (
                           <>
                             <label className="field wide-field">
-                              <span>Reality Public Key</span>
+                              <span>REALITY Public Key</span>
                               <input
                                 type="text"
-                                value={ruleModal.draft.trojanRealityPublicKey}
-                                onChange={(event) => updateRuleDraft("trojanRealityPublicKey", event.currentTarget.value)}
-                                placeholder="填写 Reality Public Key"
+                                value={nodeModal.draft.trojanRealityPublicKey}
+                                onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, trojanRealityPublicKey: e.currentTarget.value } })}
                                 required
-                                disabled={isBusy}
                               />
                             </label>
                             <label className="field">
-                              <span>Reality Short ID</span>
+                              <span>REALITY Short ID</span>
                               <input
                                 type="text"
-                                value={ruleModal.draft.trojanRealityShortId}
-                                onChange={(event) => updateRuleDraft("trojanRealityShortId", event.currentTarget.value)}
-                                placeholder="可选"
-                                disabled={isBusy}
-                              />
-                            </label>
-                            <label className="field wide-field">
-                              <span>Reality Spider X</span>
-                              <input
-                                type="text"
-                                value={ruleModal.draft.trojanRealitySpiderX}
-                                onChange={(event) => updateRuleDraft("trojanRealitySpiderX", event.currentTarget.value)}
-                                placeholder="/"
-                                disabled={isBusy}
+                                value={nodeModal.draft.trojanRealityShortId}
+                                onChange={(e) => setNodeModal({ ...nodeModal, draft: { ...nodeModal.draft, trojanRealityShortId: e.currentTarget.value } })}
                               />
                             </label>
                           </>
-                        ) : null}
+                        )}
                       </>
-                    ) : null}
+                    )}
                   </div>
                 </section>
               </div>
 
-              {ruleFormError !== "" ? (
-                <p className="form-error" role="alert">
-                  {ruleFormError}
-                </p>
-              ) : null}
+              {nodeFormError && <p className="form-error">{nodeFormError}</p>}
 
               <div className="modal-footer">
-                <button className="ghost-button" type="button" onClick={closeRuleModal} disabled={isBusy}>
-                  取消
-                </button>
-                <button className="primary-button" type="submit" disabled={isBusy}>
-                  {ruleModal.mode === "create" ? "创建规则" : "保存修改"}
-                </button>
+                <button className="ghost-button" type="button" onClick={() => setNodeModal(null)}>取消</button>
+                <button className="primary-button" type="submit">保存节点</button>
               </div>
             </form>
           </section>
         </div>
-      ) : null}
+      )}
 
-      {batchAddOpen ? (
+      {/* BATCH IMPORT MODAL */}
+      {batchAddOpen && (
         <div className="modal-layer" role="presentation">
-          <section className="rule-modal" role="dialog" aria-modal="true" aria-labelledby="batch-modal-title">
-            <form onSubmit={(event) => void handleBatchAddSubmit(event)}>
+          <section className="rule-modal" role="dialog" aria-modal="true">
+            <form onSubmit={(e) => void handleBatchAddSubmit(e)}>
               <div className="modal-header">
                 <div>
                   <p className="eyebrow">Batch Importer</p>
-                  <h2 id="batch-modal-title">批量添加代理规则</h2>
-                  <p className="modal-description">一行输入一个出口代理链接。系统将自动提取名称，并连贯顺序分配本地空闲端口。</p>
+                  <h2>批量导入代理节点规则</h2>
+                  <p className="modal-description">一行输入一个出口链接。系统将自动生成对应的代理节点，并建立其专属策略出站组和本地顺序空闲监听端口。</p>
                 </div>
-                <button className="small-icon-button" type="button" aria-label="关闭批量导入器" onClick={closeBatchAddModal} disabled={isBusy}>
+                <button className="small-icon-button" type="button" onClick={() => setBatchAddOpen(false)}>
                   <Icon name="close" />
                 </button>
               </div>
@@ -2562,18 +2365,11 @@ function App() {
                     <label className="field">
                       <span>入口协议</span>
                       <select
-                        value={batchAddInboundProtocol}
-                        onChange={(event) => {
-                          if (isInboundProtocol(event.currentTarget.value)) {
-                            setBatchAddInboundProtocol(event.currentTarget.value);
-                          }
-                        }}
-                        disabled={isBusy}
+                        value={batchAddInboundType}
+                        onChange={(e) => setBatchAddInboundType(e.currentTarget.value)}
                       >
-                        {inboundProtocolOptions.map((protocol) => (
-                          <option value={protocol} key={protocol}>
-                            {formatInboundProtocol(protocol)}
-                          </option>
+                        {inboundTypeOptions.map(opt => (
+                          <option value={opt.value} key={opt.value}>{opt.label}</option>
                         ))}
                       </select>
                     </label>
@@ -2582,142 +2378,194 @@ function App() {
                       <input
                         type="text"
                         value={batchAddInboundListen}
-                        onChange={(event) => setBatchAddInboundListen(event.currentTarget.value)}
+                        onChange={(e) => setBatchAddInboundListen(e.currentTarget.value)}
                         required
-                        disabled={isBusy}
                       />
                     </label>
                     <label className="field wide-field">
-                      <span>批量出口链接 (每行一个)</span>
+                      <span>出口链接 (每行一个，支持 ss, vless, trojan, socks)</span>
                       <textarea
+                        rows={8}
                         value={batchAddText}
-                        onChange={(event) => setBatchAddText(event.currentTarget.value)}
-                        placeholder="socks5://host:port&#10;socks5://user:pass@host:port&#10;vless://...#可选备注"
+                        onChange={(e) => setBatchAddText(e.currentTarget.value)}
+                        placeholder="socks5://host:port&#10;ss://...#备注&#10;vless://..."
                         required
-                        disabled={isBusy}
                       />
                     </label>
                   </div>
                 </section>
               </div>
-              {batchAddError !== "" ? (
-                <p className="form-error" role="alert" style={{ margin: "0 var(--space-5)" }}>
-                  {batchAddError}
-                </p>
-              ) : null}
+              {batchAddError && <p className="form-error" style={{ margin: "0 var(--space-5)" }}>{batchAddError}</p>}
               <div className="modal-footer">
-                <button className="ghost-button" type="button" onClick={closeBatchAddModal} disabled={isBusy}>
-                  取消
-                </button>
-                <button className="primary-button" type="submit" disabled={isBusy}>
-                  批量添加
-                </button>
+                <button className="ghost-button" type="button" onClick={() => setBatchAddOpen(false)}>取消</button>
+                <button className="primary-button" type="submit">开始批量生成</button>
               </div>
             </form>
           </section>
         </div>
-      ) : null}
+      )}
 
-      {deleteConfirmation !== null ? (
+      {/* SAFETY DELETION CONFIRMATION: ProxyNode */}
+      {proxyDeleteAnalysis && (
         <div className="modal-layer confirmation-layer" role="presentation">
-          <section
-            className="confirm-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="delete-confirm-title"
-            aria-describedby="delete-confirm-description"
-          >
+          <section className="confirm-modal" role="dialog" aria-modal="true" style={{ maxWidth: "580px" }}>
             <div className="confirm-header">
               <div>
-                <p className="eyebrow">Delete confirmation</p>
-                <h2 id="delete-confirm-title">确认删除规则</h2>
+                <p className="eyebrow">Safety Check</p>
+                <h2>确认删除节点：{proxyDeleteAnalysis.proxyName}</h2>
               </div>
-              <button className="small-icon-button" type="button" aria-label="关闭删除确认" onClick={closeDeleteConfirmation} disabled={isBusy}>
+              <button className="small-icon-button" type="button" onClick={() => setProxyDeleteAnalysis(null)}>
                 <Icon name="close" />
               </button>
             </div>
 
-            <div className="confirm-body">
-              {deleteConfirmation.mode === "single" ? (
-                <p id="delete-confirm-description">
-                  将删除规则 <strong>“{deleteConfirmation.remark}”</strong>。确认后会保存后端状态，并在核心运行中时同步应用。
-                </p>
+            <div className="confirm-body" style={{ display: "grid", gap: "var(--space-3)" }}>
+              {proxyDeleteAnalysis.analysis.affectedGroups.length === 0 ? (
+                <p>该代理节点未被任何出站策略组使用，可以安全地物理删除。</p>
               ) : (
-                <p id="delete-confirm-description">
-                  将删除当前选中的 <strong>{deleteConfirmation.count}</strong> 条规则。确认后会同步清理选择状态并应用后端配置。
-                </p>
+                <>
+                  <p>
+                    该代理节点正在被以下 <strong>{proxyDeleteAnalysis.analysis.affectedGroups.length}</strong> 个策略组引用：
+                    <br />
+                    <span style={{ color: "var(--color-accent-2)", fontWeight: 700 }}>
+                      {proxyDeleteAnalysis.analysis.affectedGroups.join("，")}
+                    </span>
+                  </p>
+
+                  {proxyDeleteAnalysis.analysis.isUniqueInAny ? (
+                    <div style={{ background: "rgba(224, 86, 86, 0.15)", border: "1px solid var(--color-ink-strong)", padding: "var(--space-3)", borderRadius: "var(--radius-md)" }}>
+                      <p style={{ color: "#e05656", fontWeight: 800, marginBottom: "var(--space-2)" }}>
+                        ⚠️ 警告：唯一出口拦截
+                      </p>
+                      <p style={{ fontSize: "0.85rem", lineHeight: 1.5 }}>
+                        此节点是某些策略组的唯一出站节点。如果直接删除，该策略组将变空，会导致绑定的端口规则
+                        <strong style={{ color: "var(--color-accent)" }}> [{proxyDeleteAnalysis.analysis.affectedRules.join("，")}] </strong>
+                        断网。
+                      </p>
+
+                      <div style={{ marginTop: "var(--space-4)", display: "grid", gap: "var(--space-3)" }}>
+                        {/* Option 1: Replace */}
+                        <label style={{ display: "flex", gap: "var(--space-2)", alignItems: "center", cursor: "pointer" }}>
+                          <input
+                            type="radio"
+                            name="delete-action"
+                            checked={!proxyDeleteAnalysis.forceDisableRules && proxyDeleteAnalysis.replacementProxyId !== null}
+                            onChange={() => setProxyDeleteAnalysis({ ...proxyDeleteAnalysis, forceDisableRules: false, replacementProxyId: appState.proxies.find(p => p.id !== proxyDeleteAnalysis.proxyId)?.id ?? null })}
+                          />
+                          <div>
+                            <strong>替换为此节点的替代出口：</strong>
+                            <select
+                              value={proxyDeleteAnalysis.replacementProxyId ?? ""}
+                              onChange={(e) => setProxyDeleteAnalysis({ ...proxyDeleteAnalysis, forceDisableRules: false, replacementProxyId: e.currentTarget.value || null })}
+                              disabled={proxyDeleteAnalysis.forceDisableRules}
+                              style={{ padding: "4px", borderRadius: "4px", marginLeft: "8px" }}
+                            >
+                              <option value="" disabled>-- 选择另一个代理节点 --</option>
+                              {appState.proxies.filter(p => p.id !== proxyDeleteAnalysis.proxyId).map(p => (
+                                <option value={p.id} key={p.id}>{p.name}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </label>
+
+                        {/* Option 2: Disable rules */}
+                        <label style={{ display: "flex", gap: "var(--space-2)", alignItems: "center", cursor: "pointer" }}>
+                          <input
+                            type="radio"
+                            name="delete-action"
+                            checked={proxyDeleteAnalysis.forceDisableRules}
+                            onChange={() => setProxyDeleteAnalysis({ ...proxyDeleteAnalysis, forceDisableRules: true, replacementProxyId: null })}
+                          />
+                          <div>
+                            <strong>强行删除，并停用相关的入口规则</strong>
+                            <p style={{ fontSize: "0.75rem", color: "var(--color-ink-weak)" }}>将自动将关联的监听端口设为停用状态。</p>
+                          </div>
+                        </label>
+                      </div>
+                    </div>
+                  ) : (
+                    <p style={{ fontSize: "0.85rem" }}>
+                      这些策略组还包含其他活跃节点成员。删除后此节点会从中移除，出口规则不会断网，可以安全移除。
+                    </p>
+                  )}
+                </>
               )}
             </div>
 
             <div className="confirm-footer">
-              <button className="ghost-button" type="button" onClick={closeDeleteConfirmation} disabled={isBusy}>
+              <button className="ghost-button" type="button" onClick={() => setProxyDeleteAnalysis(null)}>
                 取消
               </button>
-              <button className="danger-button" type="button" onClick={() => void confirmDeleteRules()} disabled={isBusy}>
+              <button
+                className="danger-button"
+                type="button"
+                onClick={() => void confirmDeleteNode()}
+                disabled={proxyDeleteAnalysis.analysis.isUniqueInAny && !proxyDeleteAnalysis.forceDisableRules && !proxyDeleteAnalysis.replacementProxyId}
+              >
                 <Icon name="delete" />
                 <span>确认删除</span>
               </button>
             </div>
           </section>
         </div>
-      ) : null}
+      )}
 
-      {statsDetailsRule !== null ? (
+      {/* SAFETY DELETION CONFIRMATION: ProxyGroup */}
+      {groupDeleteAnalysis && (
         <div className="modal-layer confirmation-layer" role="presentation">
-          <section
-            className="confirm-modal stats-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="stats-modal-title"
-          >
-            <div className="confirm-header" style={{ background: "linear-gradient(145deg, var(--color-field-strong), transparent)" }}>
+          <section className="confirm-modal" role="dialog" aria-modal="true">
+            <div className="confirm-header">
               <div>
-                <p className="eyebrow">Traffic Stats</p>
-                <h2 id="stats-modal-title">流量统计详情</h2>
+                <p className="eyebrow">Safety Check</p>
+                <h2>确认删除策略组：{groupDeleteAnalysis.groupName}</h2>
               </div>
-              <button
-                className="small-icon-button"
-                type="button"
-                aria-label="关闭统计详情"
-                onClick={closeStatsDetailsModal}
-              >
+              <button className="small-icon-button" type="button" onClick={() => setGroupDeleteAnalysis(null)}>
                 <Icon name="close" />
               </button>
             </div>
 
-            <div className="confirm-body" style={{ padding: "var(--space-6) var(--space-5)" }}>
-              <p style={{ marginBottom: "var(--space-4)", color: "var(--color-ink)", fontWeight: 800, fontSize: "1.1rem" }}>
-                规则：<strong>{statsDetailsRule.remark}</strong>
-              </p>
-              <div style={{ display: "grid", gap: "var(--space-3)" }}>
-                <div className="stats-detail-row">
-                  <span className="label">累计上传：</span>
-                  <span className="value uplink">↑ {formatBytes(trafficStats[statsDetailsRule.id]?.uplink ?? 0)}</span>
+            <div className="confirm-body" style={{ display: "grid", gap: "var(--space-3)" }}>
+              {groupDeleteAnalysis.analysis.affectedRules.length === 0 ? (
+                <p>该策略组未被任何本地监听规则引用，可以安全地直接删除。</p>
+              ) : (
+                <div style={{ background: "rgba(224, 86, 86, 0.15)", border: "1px solid var(--color-ink-strong)", padding: "var(--space-3)", borderRadius: "var(--radius-md)" }}>
+                  <p style={{ color: "#e05656", fontWeight: 800, marginBottom: "var(--space-2)" }}>
+                    ⚠️ 该策略组正在被以下规则绑定使用：
+                  </p>
+                  <p style={{ color: "var(--color-accent)", fontWeight: 700, marginBottom: "var(--space-3)" }}>
+                    [{groupDeleteAnalysis.analysis.affectedRules.join("，")}]
+                  </p>
+                  <label style={{ display: "flex", gap: "var(--space-2)", alignItems: "center", cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={groupDeleteAnalysis.forceDisableRules}
+                      onChange={(e) => setGroupDeleteAnalysis({ ...groupDeleteAnalysis, forceDisableRules: e.currentTarget.checked })}
+                    />
+                    <div>
+                      <strong>删除并强制停用引用此组的所有监听规则</strong>
+                    </div>
+                  </label>
                 </div>
-                <div className="stats-detail-row">
-                  <span className="label">累计下载：</span>
-                  <span className="value downlink">↓ {formatBytes(trafficStats[statsDetailsRule.id]?.downlink ?? 0)}</span>
-                </div>
-                <div className="stats-detail-divider"></div>
-                <div className="stats-detail-row total">
-                  <span className="label">累计总流量：</span>
-                  <span className="value total">{formatBytes((trafficStats[statsDetailsRule.id]?.uplink ?? 0) + (trafficStats[statsDetailsRule.id]?.downlink ?? 0))}</span>
-                </div>
-              </div>
+              )}
             </div>
 
             <div className="confirm-footer">
+              <button className="ghost-button" type="button" onClick={() => setGroupDeleteAnalysis(null)}>
+                取消
+              </button>
               <button
-                className="primary-button"
+                className="danger-button"
                 type="button"
-                onClick={closeStatsDetailsModal}
+                onClick={() => void confirmDeleteGroup()}
+                disabled={groupDeleteAnalysis.analysis.affectedRules.length > 0 && !groupDeleteAnalysis.forceDisableRules}
               >
-                <span>知道了</span>
+                <Icon name="delete" />
+                <span>确认删除</span>
               </button>
             </div>
           </section>
         </div>
-      ) : null}
+      )}
     </main>
   );
 }

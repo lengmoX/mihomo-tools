@@ -1,18 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type InboundProtocol = "socks" | "http";
 export type OutboundProtocol = "socks" | "vless" | "shadowsocks" | "trojan";
 
 export interface AuthConfig {
   username: string;
   password: string;
-}
-
-export interface InboundConfig {
-  protocol: InboundProtocol;
-  listen: string;
-  port: number;
-  auth: AuthConfig | null;
 }
 
 export type OutboundConfig = SocksOutboundConfig | VlessOutboundConfig | ShadowsocksOutboundConfig | TrojanOutboundConfig;
@@ -113,48 +105,47 @@ export interface TrojanOutboundConfig {
   importSource: ImportSource | null;
 }
 
-export interface ProxyRule {
-  id: string;
-  remark: string;
-  enabled: boolean;
-  inbound: InboundConfig;
-  outbound: OutboundConfig;
-  ipCheck: IpCheckResult | null;
-}
-
 export interface IpCheckResult {
   ip: string;
   country: string | null;
   checkedAt: number;
 }
 
+export interface ProxyNode {
+  id: string;
+  name: string;
+  config: OutboundConfig;
+}
+
+export interface ProxyGroup {
+  id: string;
+  name: string;
+  groupType: string; // "select"
+  proxies: string[];
+}
+
+export interface ListenerRule {
+  id: string;
+  name: string;
+  listen: string;
+  port: number;
+  inboundType: string; // "mixed" | "socks" | "http"
+  groupId: string;
+  enabled: boolean;
+  ipCheck: IpCheckResult | null;
+}
+
 export interface AppState {
-  schemaVersion: 2;
-  rules: ProxyRule[];
+  schemaVersion: number; // 3
+  proxies: ProxyNode[];
+  groups: ProxyGroup[];
+  rules: ListenerRule[];
 }
 
 export interface ParseOutboundUrlResult {
   outbound: OutboundConfig;
   displayName: string | null;
   warnings: string[];
-}
-
-export interface NewRuleRequest {
-  remark?: string | null;
-  inboundProtocol?: InboundProtocol | null;
-  inboundListen?: string | null;
-  inboundPort?: number | null;
-  inboundAuth?: AuthConfig | null;
-  outbound: OutboundConfig;
-  enabled?: boolean | null;
-}
-
-export interface UpdateRuleRequest {
-  id: string;
-  remark: string;
-  enabled: boolean;
-  inbound: InboundConfig;
-  outbound: OutboundConfig;
 }
 
 export interface RuntimeStatus {
@@ -203,6 +194,18 @@ export interface ApplyRulesResult {
   status: RuntimeStatus;
 }
 
+export interface ProxyDeletionAnalysis {
+  canDelete: boolean;
+  isUniqueInAny: boolean;
+  affectedGroups: string[];
+  affectedRules: string[];
+}
+
+export interface ProxyGroupDeletionAnalysis {
+  canDelete: boolean;
+  affectedRules: string[];
+}
+
 export interface MihomoStatItem {
   name: string;
   value: number;
@@ -219,15 +222,35 @@ export const backend = {
 
   saveAndApplyAppState: (state: AppState) => invoke<ApplyRulesResult>("save_and_apply_app_state", { state }),
 
-  addRule: (request: NewRuleRequest) => invoke<AppState>("add_rule", { request }),
+  addRule: (rule: ListenerRule) => invoke<AppState>("add_rule", { rule }),
 
   duplicateRule: (ruleId: string) => invoke<AppState>("duplicate_rule", { ruleId }),
 
-  updateRule: (request: UpdateRuleRequest) => invoke<AppState>("update_rule", { request }),
+  updateRule: (rule: ListenerRule) => invoke<AppState>("update_rule", { rule }),
 
   setRuleEnabled: (ruleId: string, enabled: boolean) => invoke<AppState>("set_rule_enabled", { ruleId, enabled }),
 
   removeRule: (ruleId: string) => invoke<AppState>("remove_rule", { ruleId }),
+
+  deleteRule: (ruleId: string) => invoke<AppState>("delete_rule", { ruleId }),
+
+  addProxyNode: (node: ProxyNode) => invoke<AppState>("add_proxy_node", { node }),
+
+  updateProxyNode: (node: ProxyNode) => invoke<AppState>("update_proxy_node", { node }),
+
+  analyzeProxyDeletion: (proxyId: string) => invoke<ProxyDeletionAnalysis>("analyze_proxy_deletion", { proxyId }),
+
+  deleteProxyNodeSafe: (proxyId: string, forceDisableRules: boolean, replacementProxyId: string | null) =>
+    invoke<AppState>("delete_proxy_node_safe", { proxyId, forceDisableRules, replacementProxyId }),
+
+  addProxyGroup: (group: ProxyGroup) => invoke<AppState>("add_proxy_group", { group }),
+
+  updateProxyGroup: (group: ProxyGroup) => invoke<AppState>("update_proxy_group", { group }),
+
+  analyzeProxyGroupDeletion: (groupId: string) => invoke<ProxyGroupDeletionAnalysis>("analyze_proxy_group_deletion", { groupId }),
+
+  deleteProxyGroupSafe: (groupId: string, forceDisableRules: boolean) =>
+    invoke<AppState>("delete_proxy_group_safe", { groupId, forceDisableRules }),
 
   checkRuleIp: (ruleId: string) => invoke<AppState>("check_rule_ip", { ruleId }),
 
