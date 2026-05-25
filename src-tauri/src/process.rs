@@ -109,14 +109,49 @@ impl MihomoProcessManager {
     }
 }
 
+use std::collections::HashMap;
+use std::time::Instant;
+
+#[derive(Debug, Clone, Default)]
+pub struct ConnectionInfo {
+    pub inbound_port: u16,
+    pub last_upload: u64,
+    pub last_download: u64,
+}
+
 pub struct AppRuntimeState {
     pub process: Mutex<MihomoProcessManager>,
+    pub last_connections: Mutex<HashMap<String, ConnectionInfo>>,
+    pub traffic_totals: Mutex<HashMap<u16, (u64, u64)>>, // Key: inbound port, Value: (upload_total, download_total)
+    pub last_poll_time: Mutex<Option<Instant>>,
+    pub last_speeds: Mutex<HashMap<u16, (u64, u64)>>, // Key: inbound port, Value: (upload_speed, download_speed) in bytes/sec
 }
 
 impl Default for AppRuntimeState {
     fn default() -> Self {
         Self {
             process: Mutex::new(MihomoProcessManager::default()),
+            last_connections: Mutex::new(HashMap::new()),
+            traffic_totals: Mutex::new(HashMap::new()),
+            last_poll_time: Mutex::new(None),
+            last_speeds: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl AppRuntimeState {
+    pub fn clear_stats(&self) {
+        if let Ok(mut conns) = self.last_connections.lock() {
+            conns.clear();
+        }
+        if let Ok(mut totals) = self.traffic_totals.lock() {
+            totals.clear();
+        }
+        if let Ok(mut poll_time) = self.last_poll_time.lock() {
+            *poll_time = None;
+        }
+        if let Ok(mut speeds) = self.last_speeds.lock() {
+            speeds.clear();
         }
     }
 }

@@ -200,13 +200,17 @@ export interface ApplyRulesResult {
   status: RuntimeStatus;
 }
 
-export interface MihomoStatItem {
-  name: string;
-  value: number;
+export interface MihomoRuleStat {
+  inboundPort: number;
+  uploadSpeed: number;
+  downloadSpeed: number;
+  uploadTotal: number;
+  downloadTotal: number;
+  activeConnections: number;
 }
 
 export interface MihomoQueryStatsResult {
-  stat?: MihomoStatItem[];
+  rules: MihomoRuleStat[];
 }
 
 export const backend = {

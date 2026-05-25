@@ -767,3 +767,19 @@ pub fn validate_anytls_outbound(proxy_id: &str, config: &AnytlsOutboundConfig) -
     }
     Ok(())
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MihomoRuleStat {
+    pub inbound_port: u16,
+    pub upload_speed: u64,
+    pub download_speed: u64,
+    pub upload_total: u64,
+    pub download_total: u64,
+    pub active_connections: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MihomoQueryStatsResult {
+    pub rules: Vec<MihomoRuleStat>,
+}

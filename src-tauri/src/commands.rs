@@ -1,6 +1,8 @@
-use serde_json::{json, Value};
-use std::collections::HashSet;
+use serde_json::Value;
+use std::collections::{HashSet, HashMap};
 use std::path::PathBuf;
+use std::time::Instant;
+use serde::Deserialize;
 
 use crate::models::{
     AppState, ApplyRulesResult, CommandResult, OutboundConfig,
@@ -414,6 +416,7 @@ pub fn get_mihomo_status(
 
 #[tauri::command]
 pub fn start_mihomo(runtime_state: tauri::State<'_, AppRuntimeState>) -> CommandResult<RuntimeStatus> {
+    runtime_state.clear_stats();
     let state = read_app_state_from_disk()?;
     let port_validation = duplicate_port_validation(&state.rules);
     if !port_validation.valid {
@@ -439,6 +442,7 @@ pub fn start_mihomo(runtime_state: tauri::State<'_, AppRuntimeState>) -> Command
 
 #[tauri::command]
 pub fn stop_mihomo(runtime_state: tauri::State<'_, AppRuntimeState>) -> CommandResult<RuntimeStatus> {
+    runtime_state.clear_stats();
     runtime_state
         .process
         .lock()
@@ -478,9 +482,153 @@ pub fn restart_mihomo(runtime_state: tauri::State<'_, AppRuntimeState>) -> Comma
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MihomoMetadata {
+    inbound_port: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MihomoConnection {
+    id: String,
+    upload: u64,
+    download: u64,
+    metadata: MihomoMetadata,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MihomoConnectionsResponse {
+    connections: Vec<MihomoConnection>,
+}
+
 #[tauri::command]
 pub fn query_mihomo_stats(
-    _runtime_state: tauri::State<'_, AppRuntimeState>,
-) -> CommandResult<Value> {
-    Ok(json!({ "stat": [] }))
+    runtime_state: tauri::State<'_, AppRuntimeState>,
+) -> CommandResult<crate::models::MihomoQueryStatsResult> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+
+    let res = client.get("http://127.0.0.1:37896/connections")
+        .send();
+
+    let conn_resp: MihomoConnectionsResponse = match res {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                resp.json::<MihomoConnectionsResponse>()
+                    .map_err(|e| format!("Failed to parse connections JSON: {e}"))?
+            } else {
+                return Ok(crate::models::MihomoQueryStatsResult { rules: Vec::new() });
+            }
+        }
+        Err(_) => {
+            return Ok(crate::models::MihomoQueryStatsResult { rules: Vec::new() });
+        }
+    };
+
+    let mut current_conns = std::collections::HashSet::new();
+    let mut active_connections_count: HashMap<u16, usize> = HashMap::new();
+    let mut port_deltas: HashMap<u16, (u64, u64)> = HashMap::new();
+
+    // Sum active traffic deltas and connections by inbound port
+    {
+        let mut last_conns = runtime_state.last_connections.lock()
+            .map_err(|_| "Failed to lock last_connections".to_string())?;
+
+        let mut totals = runtime_state.traffic_totals.lock()
+            .map_err(|_| "Failed to lock traffic_totals".to_string())?;
+
+        for conn in conn_resp.connections {
+            let inbound_port_opt = conn.metadata.inbound_port.as_ref().and_then(|val| {
+                if let Some(port_num) = val.as_u64() {
+                    Some(port_num as u16)
+                } else if let Some(port_str) = val.as_str() {
+                    port_str.parse::<u16>().ok()
+                } else {
+                    None
+                }
+            });
+
+            if let Some(inbound_port) = inbound_port_opt {
+                if inbound_port > 0 {
+                    current_conns.insert(conn.id.clone());
+
+                    let count = active_connections_count.entry(inbound_port).or_insert(0);
+                    *count += 1;
+
+                    let last_info = last_conns.entry(conn.id.clone()).or_insert_with(|| crate::process::ConnectionInfo {
+                        inbound_port,
+                        last_upload: 0,
+                        last_download: 0,
+                    });
+
+                    let delta_up = conn.upload.saturating_sub(last_info.last_upload);
+                    let delta_down = conn.download.saturating_sub(last_info.last_download);
+
+                    let deltas = port_deltas.entry(inbound_port).or_insert((0, 0));
+                    deltas.0 += delta_up;
+                    deltas.1 += delta_down;
+
+                    let port_total = totals.entry(inbound_port).or_insert((0, 0));
+                    port_total.0 += delta_up;
+                    port_total.1 += delta_down;
+
+                    last_info.last_upload = conn.upload;
+                    last_info.last_download = conn.download;
+                }
+            }
+        }
+
+        // Clean up closed connections
+        last_conns.retain(|id, _| current_conns.contains(id));
+    }
+
+    // Calculate time elapsed
+    let now = Instant::now();
+    let mut last_poll = runtime_state.last_poll_time.lock()
+        .map_err(|_| "Failed to lock last_poll_time".to_string())?;
+    
+    let delta_t = if let Some(last_time) = *last_poll {
+        let diff = now.duration_since(last_time).as_secs_f64();
+        if diff > 0.1 { diff } else { 1.0 }
+    } else {
+        1.0
+    };
+    *last_poll = Some(now);
+
+    // Calculate speeds
+    let mut current_speeds = HashMap::new();
+    for (port, deltas) in port_deltas {
+        let up_speed = (deltas.0 as f64 / delta_t) as u64;
+        let down_speed = (deltas.1 as f64 / delta_t) as u64;
+        current_speeds.insert(port, (up_speed, down_speed));
+    }
+
+    let mut rules_stats = Vec::new();
+    let state_res = read_app_state_from_disk();
+    if let Ok(state) = state_res {
+        let totals = runtime_state.traffic_totals.lock()
+            .map_err(|_| "Failed to lock traffic_totals".to_string())?;
+        
+        for rule in state.rules {
+            let port = rule.inbound.port;
+            let active_conns = *active_connections_count.get(&port).unwrap_or(&0);
+            let speed = *current_speeds.get(&port).unwrap_or(&(0, 0));
+            let total = *totals.get(&port).unwrap_or(&(0, 0));
+
+            rules_stats.push(crate::models::MihomoRuleStat {
+                inbound_port: port,
+                upload_speed: speed.0,
+                download_speed: speed.1,
+                upload_total: total.0,
+                download_total: total.1,
+                active_connections: active_conns,
+            });
+        }
+    }
+
+    Ok(crate::models::MihomoQueryStatsResult { rules: rules_stats })
 }

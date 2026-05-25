@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent, type ReactElement } from 
 import {
   backend, type AppState, type AuthConfig, type OutboundConfig,
   type OutboundProtocol, type ProxyRule,
-  type RuntimeStatus, type VlessFlow, type MihomoBinaryValidation, type MihomoVersionInfo,
+  type RuntimeStatus, type VlessFlow, type MihomoBinaryValidation, type MihomoVersionInfo, type MihomoRuleStat,
 } from "./api/backend";
 import { RuntimeHero } from "./features/runtime/RuntimeHero";
 import type { StatusMeta } from "./features/runtime/runtime-types";
@@ -528,6 +528,26 @@ function buildInboundProxyUrl(rule: ProxyRule) {
 
 
 
+function formatSpeed(bytesPerSec: number | undefined) {
+  if (!bytesPerSec || bytesPerSec < 0) return "0 B/s";
+  if (bytesPerSec < 1024) return `${bytesPerSec} B/s`;
+  const kb = bytesPerSec / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB/s`;
+  const mb = kb / 1024;
+  return `${mb.toFixed(1)} MB/s`;
+}
+
+function formatTraffic(bytes: number | undefined) {
+  if (!bytes || bytes < 0) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${mb.toFixed(1)} MB`;
+  const gb = mb / 1024;
+  return `${gb.toFixed(1)} GB`;
+}
+
 function App() {
   const [appState, setAppState] = useState<AppState>(emptyAppState);
   const [theme, setTheme] = useState<"system" | "light" | "dark">(() => {
@@ -546,6 +566,7 @@ function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const [checkingRuleIds, setCheckingRuleIds] = useState<string[]>([]);
+  const [ruleStats, setRuleStats] = useState<Record<number, MihomoRuleStat>>({});
 
   // Modals state
   const [ruleModal, setRuleModal] = useState<RuleModalState | null>(null);
@@ -579,6 +600,36 @@ function App() {
       if (timerId) window.clearInterval(timerId);
     };
   }, []);
+
+  // Poll traffic stats when Mihomo is running
+  useEffect(() => {
+    if (!runtimeStatus.running) {
+      setRuleStats({});
+      return;
+    }
+
+    let timerId: number | null = null;
+    const pollTraffic = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const stats = await backend.queryMihomoStats();
+        const nextStats: Record<number, MihomoRuleStat> = {};
+        for (const item of stats.rules) {
+          nextStats[item.inboundPort] = item;
+        }
+        setRuleStats(nextStats);
+      } catch (err) {
+        console.error("Failed to query Mihomo traffic stats:", err);
+      }
+    };
+
+    pollTraffic();
+    timerId = window.setInterval(pollTraffic, 2000);
+
+    return () => {
+      if (timerId) window.clearInterval(timerId);
+    };
+  }, [runtimeStatus.running]);
 
   // Theme application
   useEffect(() => {
@@ -1327,9 +1378,25 @@ function App() {
                       <div className="rule-row">
                         <div className="rule-identity">
                           <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-                            <span className={`status-dot ${!runtimeStatus.running || !rule.enabled ? "is-inactive" : "is-active"}`} />
+                            <span className={`status-dot ${
+                              !rule.enabled || !runtimeStatus.running
+                                ? "is-inactive"
+                                : (ruleStats[rule.inbound.port]?.activeConnections ?? 0) > 0
+                                  ? "is-active"
+                                  : "is-idle"
+                            }`} />
                             <h3>{rule.remark}</h3>
                           </div>
+                          {runtimeStatus.running && rule.enabled && ruleStats[rule.inbound.port] && (
+                            <div className="traffic-stats">
+                              <span className="traffic-speeds">
+                                ↑ {formatSpeed(ruleStats[rule.inbound.port].uploadSpeed)} ↓ {formatSpeed(ruleStats[rule.inbound.port].downloadSpeed)}
+                              </span>
+                              <span className="traffic-totals">
+                                (总量: ↑ {formatTraffic(ruleStats[rule.inbound.port].uploadTotal)} ↓ {formatTraffic(ruleStats[rule.inbound.port].downloadTotal)})
+                              </span>
+                            </div>
+                          )}
                         </div>
 
                         <div className="endpoint-line local">
