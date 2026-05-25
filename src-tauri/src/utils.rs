@@ -202,7 +202,8 @@ pub fn build_proxy_url(listen: &str, port: u16, protocol: &InboundProtocol) -> S
         _ => "socks5h",
     };
 
-    format!("{scheme}://{}:{}", listen, port)
+    let target_host = if listen == "0.0.0.0" { "127.0.0.1" } else { listen };
+    format!("{scheme}://{}:{}", target_host, port)
 }
 
 pub fn new_rule_id() -> String {

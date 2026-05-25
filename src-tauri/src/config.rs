@@ -56,6 +56,17 @@ pub fn generate_config_value(state: &AppState) -> CommandResult<Value> {
         "allow-lan": false,
         "mode": "rule",
         "log-level": "warning",
+        "dns": {
+            "enable": true,
+            "ipv6": false,
+            "enhanced-mode": "redir-host",
+            "nameserver": [
+                "223.5.5.5",
+                "119.29.29.29",
+                "180.76.76.76",
+                "8.8.8.8"
+            ]
+        },
         "listeners": listeners,
         "proxies": proxies,
         "proxy-groups": proxy_groups,
