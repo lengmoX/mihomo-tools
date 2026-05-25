@@ -351,6 +351,7 @@ pub enum OutboundConfig {
     Vless(VlessOutboundConfig),
     Shadowsocks(ShadowsocksOutboundConfig),
     Trojan(TrojanOutboundConfig),
+    Anytls(AnytlsOutboundConfig),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -622,6 +623,7 @@ pub fn validate_outbound_config(proxy_id: &str, outbound: &OutboundConfig) -> Co
         OutboundConfig::Vless(config) => validate_vless_outbound(proxy_id, config)?,
         OutboundConfig::Shadowsocks(config) => validate_shadowsocks_outbound(proxy_id, config)?,
         OutboundConfig::Trojan(config) => validate_trojan_outbound(proxy_id, config)?,
+        OutboundConfig::Anytls(config) => validate_anytls_outbound(proxy_id, config)?,
     }
     Ok(())
 }
@@ -726,6 +728,42 @@ pub fn validate_auth(auth: Option<&AuthConfig>) -> CommandResult<()> {
         if auth.username.is_empty() || auth.password.is_empty() {
             return Err("Authentication username and password are both required".to_string());
         }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AnytlsOutboundConfig {
+    pub address: String,
+    pub port: u16,
+    pub password: String,
+    #[serde(default)]
+    pub client_fingerprint: Option<String>,
+    #[serde(default)]
+    pub udp: Option<bool>,
+    #[serde(default)]
+    pub idle_session_check_interval: Option<u32>,
+    #[serde(default)]
+    pub idle_session_timeout: Option<u32>,
+    #[serde(default)]
+    pub min_idle_session: Option<u32>,
+    #[serde(default)]
+    pub sni: Option<String>,
+    #[serde(default)]
+    pub alpn: Option<Vec<String>>,
+    #[serde(default)]
+    pub skip_cert_verify: Option<bool>,
+    #[serde(default)]
+    pub import_source: Option<ImportSource>,
+}
+
+pub fn validate_anytls_outbound(proxy_id: &str, config: &AnytlsOutboundConfig) -> CommandResult<()> {
+    if config.address.trim().is_empty() {
+        return Err(format!("Proxy '{proxy_id}' has an empty AnyTLS address"));
+    }
+    if config.password.is_empty() {
+        return Err(format!("Proxy '{proxy_id}' has an empty AnyTLS password"));
     }
     Ok(())
 }

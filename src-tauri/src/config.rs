@@ -53,6 +53,7 @@ pub fn generate_config_value(state: &AppState) -> CommandResult<Value> {
 
     Ok(json!({
         "mixed-port": 37890,
+        "external-controller": "127.0.0.1:37896",
         "allow-lan": false,
         "mode": "rule",
         "log-level": "warning",
@@ -91,6 +92,40 @@ fn generate_mihomo_proxy_val(name: &str, config: &OutboundConfig) -> CommandResu
     val.insert("name".to_string(), json!(name));
 
     match config {
+        OutboundConfig::Anytls(cfg) => {
+            val.insert("type".to_string(), json!("anytls"));
+            val.insert("server".to_string(), json!(cfg.address));
+            val.insert("port".to_string(), json!(cfg.port));
+            val.insert("password".to_string(), json!(cfg.password));
+            if let Some(client_fingerprint) = &cfg.client_fingerprint {
+                if !client_fingerprint.trim().is_empty() {
+                    val.insert("client-fingerprint".to_string(), json!(client_fingerprint));
+                }
+            }
+            if let Some(udp) = cfg.udp {
+                val.insert("udp".to_string(), json!(udp));
+            }
+            if let Some(interval) = cfg.idle_session_check_interval {
+                val.insert("idle-session-check-interval".to_string(), json!(interval));
+            }
+            if let Some(timeout) = cfg.idle_session_timeout {
+                val.insert("idle-session-timeout".to_string(), json!(timeout));
+            }
+            if let Some(min_idle) = cfg.min_idle_session {
+                val.insert("min-idle-session".to_string(), json!(min_idle));
+            }
+            if let Some(sni) = &cfg.sni {
+                if !sni.trim().is_empty() {
+                    val.insert("sni".to_string(), json!(sni));
+                }
+            }
+            if let Some(alpn) = &cfg.alpn {
+                val.insert("alpn".to_string(), json!(alpn));
+            }
+            if let Some(skip_cert_verify) = cfg.skip_cert_verify {
+                val.insert("skip-cert-verify".to_string(), json!(skip_cert_verify));
+            }
+        }
         OutboundConfig::Socks(cfg) => {
             val.insert("type".to_string(), json!("socks5"));
             val.insert("server".to_string(), json!(cfg.host));

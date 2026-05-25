@@ -130,7 +130,7 @@ pub fn parse_mihomo_version(output_text: &str) -> CommandResult<MihomoVersionInf
 
     let version = first_line
         .split_whitespace()
-        .find(|word| word.starts_with('v') && word.chars().nth(1).map_or(false, |c| c.is_ascii_digit()))
+        .find(|word| word.starts_with('v') && word.chars().nth(1).is_some_and(|c| c.is_ascii_digit()))
         .map(|s| s.to_string())
         .ok_or_else(|| format!("Failed to parse Mihomo version from '{first_line}'"))?;
 

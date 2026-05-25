@@ -25,6 +25,37 @@ pub fn save_app_state(state: AppState) -> CommandResult<AppState> {
     write_app_state_to_disk(&state)
 }
 
+fn reload_mihomo_config(config_path: &std::path::Path) -> CommandResult<()> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client for config reload: {e}"))?;
+
+    let config_path_str = config_path.to_string_lossy().to_string();
+    let body = serde_json::json!({
+        "path": config_path_str
+    });
+
+    let res = client.put("http://127.0.0.1:37896/configs?force=true")
+        .json(&body)
+        .send();
+
+    match res {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                Ok(())
+            } else {
+                let status = resp.status();
+                let text = resp.text().unwrap_or_default();
+                Err(format!("Reload API returned status {status}: {text}"))
+            }
+        }
+        Err(e) => {
+            Err(format!("Failed to send reload request: {e}"))
+        }
+    }
+}
+
 #[tauri::command]
 pub fn save_and_apply_app_state(
     state: AppState,
@@ -48,8 +79,13 @@ pub fn save_and_apply_app_state(
             ));
         }
 
-        manager.stop()?;
-        manager.start(paths.mihomo_binary_path, paths.generated_config_path)?
+        if let Err(e) = reload_mihomo_config(&paths.generated_config_path) {
+            println!("Hot reload failed, falling back to restart: {e}");
+            manager.stop()?;
+            manager.start(paths.mihomo_binary_path, paths.generated_config_path)?
+        } else {
+            manager.status()?
+        }
     } else {
         manager.status()?
     };
@@ -412,14 +448,34 @@ pub fn stop_mihomo(runtime_state: tauri::State<'_, AppRuntimeState>) -> CommandR
 
 #[tauri::command]
 pub fn restart_mihomo(runtime_state: tauri::State<'_, AppRuntimeState>) -> CommandResult<RuntimeStatus> {
-    {
+    let paths = runtime_paths()?;
+    let is_running = {
         let mut manager = runtime_state
             .process
             .lock()
             .map_err(|_| "Failed to lock runtime process state".to_string())?;
-        manager.stop()?;
+        manager.status()?.running
+    };
+
+    if is_running {
+        if let Err(e) = reload_mihomo_config(&paths.generated_config_path) {
+            println!("Hot reload failed during restart, falling back to process restart: {e}");
+            let mut manager = runtime_state
+                .process
+                .lock()
+                .map_err(|_| "Failed to lock runtime process state".to_string())?;
+            manager.stop()?;
+            manager.start(paths.mihomo_binary_path, paths.generated_config_path)
+        } else {
+            let mut manager = runtime_state
+                .process
+                .lock()
+                .map_err(|_| "Failed to lock runtime process state".to_string())?;
+            manager.status()
+        }
+    } else {
+        start_mihomo(runtime_state)
     }
-    start_mihomo(runtime_state)
 }
 
 #[tauri::command]

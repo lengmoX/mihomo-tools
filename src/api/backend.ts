@@ -1,13 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type OutboundProtocol = "socks" | "vless" | "shadowsocks" | "trojan";
+export type OutboundProtocol = "socks" | "vless" | "shadowsocks" | "trojan" | "anytls";
 
 export interface AuthConfig {
   username: string;
   password: string;
 }
 
-export type OutboundConfig = SocksOutboundConfig | VlessOutboundConfig | ShadowsocksOutboundConfig | TrojanOutboundConfig;
+export type OutboundConfig = SocksOutboundConfig | VlessOutboundConfig | ShadowsocksOutboundConfig | TrojanOutboundConfig | AnytlsOutboundConfig;
 
 export interface SocksOutboundConfig {
   protocol: "socks";
@@ -102,6 +102,22 @@ export interface TrojanOutboundConfig {
   transport: TrojanTransportConfig;
   tls: TrojanTlsConfig | null;
   reality: TrojanRealityConfig | null;
+  importSource: ImportSource | null;
+}
+
+export interface AnytlsOutboundConfig {
+  protocol: "anytls";
+  address: string;
+  port: number;
+  password: string;
+  clientFingerprint: string | null;
+  udp: boolean | null;
+  idleSessionCheckInterval: number | null;
+  idleSessionTimeout: number | null;
+  minIdleSession: number | null;
+  sni: string | null;
+  alpn: string[] | null;
+  skipCertVerify: boolean | null;
   importSource: ImportSource | null;
 }
 

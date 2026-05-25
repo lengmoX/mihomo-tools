@@ -249,6 +249,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_anytls_url() {
+        let input = "anytls://superpassword@my-anytls-server.com:443?sni=example.com&skip-cert-verify=true&client-fingerprint=chrome&alpn=h2,http/1.1#MyRemark";
+        let result = parse_outbound_url_value(input).expect("parse anytls");
+        assert_eq!(result.display_name, Some("MyRemark".to_string()));
+        let OutboundConfig::Anytls(outbound) = result.outbound else {
+            panic!("Expected AnyTLS outbound config");
+        };
+        assert_eq!(outbound.address, "my-anytls-server.com");
+        assert_eq!(outbound.port, 443);
+        assert_eq!(outbound.password, "superpassword");
+        assert_eq!(outbound.sni, Some("example.com".to_string()));
+        assert_eq!(outbound.skip_cert_verify, Some(true));
+        assert_eq!(outbound.client_fingerprint, Some("chrome".to_string()));
+        assert_eq!(outbound.alpn, Some(vec!["h2".to_string(), "http/1.1".to_string()]));
+    }
+
+    #[test]
     fn detects_duplicate_local_ports() {
         let state1 = sample_state_with_socks("one", 50001);
         let state2 = sample_state_with_socks("two", 50001);

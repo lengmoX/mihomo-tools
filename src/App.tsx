@@ -55,6 +55,18 @@ type RuleFormState = {
   trojanTransportKind: "tcp" | "ws";
   trojanTransportPath: string;
   trojanTransportHost: string;
+
+  // AnyTLS configurations
+  anytlsPassword: string;
+  anytlsClientFingerprint: string;
+  anytlsUdp: boolean;
+  anytlsIdleSessionCheckInterval: string;
+  anytlsIdleSessionTimeout: string;
+  anytlsMinIdleSession: string;
+  anytlsSni: string;
+  anytlsAlpn: string;
+  anytlsSkipCertVerify: boolean;
+
   importedOutbound: OutboundConfig | null;
 };
 
@@ -111,7 +123,7 @@ const inboundTypeOptions = [
   { value: "http", label: "HTTP" },
 ];
 
-const outboundProtocolOptions: OutboundProtocol[] = ["socks", "vless", "shadowsocks", "trojan"];
+const outboundProtocolOptions: OutboundProtocol[] = ["socks", "vless", "shadowsocks", "trojan", "anytls"];
 const vlessFlowOptions: VlessFlow[] = ["xtls-rprx-vision", "xtls-rprx-vision-udp443"];
 const minAutoInboundPort = 50_000;
 const maxAutoInboundPort = 65_535;
@@ -186,6 +198,7 @@ function formatOutboundProtocol(protocol: OutboundProtocol) {
   if (protocol === "socks") return "SOCKS5";
   if (protocol === "vless") return "VLESS";
   if (protocol === "trojan") return "Trojan";
+  if (protocol === "anytls") return "AnyTLS";
   return "Shadowsocks";
 }
 
@@ -248,6 +261,18 @@ function toOutboundFormState(outbound: OutboundConfig) {
     trojanTransportKind: outbound.protocol === "trojan" ? outbound.transport.kind : "tcp" as const,
     trojanTransportPath: outbound.protocol === "trojan" ? outbound.transport.path ?? "" : "",
     trojanTransportHost: outbound.protocol === "trojan" ? outbound.transport.host ?? "" : "",
+
+    // AnyTLS mapping
+    anytlsPassword: outbound.protocol === "anytls" ? outbound.password : "",
+    anytlsClientFingerprint: outbound.protocol === "anytls" ? outbound.clientFingerprint ?? "" : "",
+    anytlsUdp: outbound.protocol === "anytls" ? !!outbound.udp : true,
+    anytlsIdleSessionCheckInterval: outbound.protocol === "anytls" ? String(outbound.idleSessionCheckInterval ?? "") : "",
+    anytlsIdleSessionTimeout: outbound.protocol === "anytls" ? String(outbound.idleSessionTimeout ?? "") : "",
+    anytlsMinIdleSession: outbound.protocol === "anytls" ? String(outbound.minIdleSession ?? "") : "",
+    anytlsSni: outbound.protocol === "anytls" ? outbound.sni ?? "" : "",
+    anytlsAlpn: outbound.protocol === "anytls" ? (outbound.alpn ?? []).join(",") : "",
+    anytlsSkipCertVerify: outbound.protocol === "anytls" ? !!outbound.skipCertVerify : false,
+
     importedOutbound: outbound.protocol === "socks" ? null : outbound,
   };
 }
@@ -376,6 +401,32 @@ function buildOutboundFromDraft(draft: RuleFormState): OutboundConfig | null {
     };
   }
 
+  if (draft.outboundProtocol === "anytls") {
+    const checkInterval = parseOptionalNonNegativeInteger(draft.anytlsIdleSessionCheckInterval);
+    const timeout = parseOptionalNonNegativeInteger(draft.anytlsIdleSessionTimeout);
+    const minIdle = parseOptionalNonNegativeInteger(draft.anytlsMinIdleSession);
+
+    if (Number.isNaN(checkInterval) || Number.isNaN(timeout) || Number.isNaN(minIdle)) {
+      return null;
+    }
+
+    return {
+      protocol: "anytls",
+      address: draft.address.trim(),
+      port,
+      password: draft.anytlsPassword,
+      clientFingerprint: draft.anytlsClientFingerprint.trim() === "" ? null : draft.anytlsClientFingerprint.trim(),
+      udp: draft.anytlsUdp,
+      idleSessionCheckInterval: checkInterval,
+      idleSessionTimeout: timeout,
+      minIdleSession: minIdle,
+      sni: draft.anytlsSni.trim() === "" ? null : draft.anytlsSni.trim(),
+      alpn: draft.anytlsAlpn.trim() === "" ? null : draft.anytlsAlpn.split(",").map(s => s.trim()).filter(Boolean),
+      skipCertVerify: draft.anytlsSkipCertVerify,
+      importSource: draft.importedOutbound?.protocol === "anytls" ? draft.importedOutbound.importSource : null,
+    };
+  }
+
   return {
     protocol: "socks",
     host: draft.address.trim(),
@@ -439,6 +490,21 @@ function applyOutboundToDraft(draft: RuleFormState, outbound: OutboundConfig): R
       trojanTransportKind: outbound.transport.kind,
       trojanTransportPath: outbound.transport.path ?? "",
       trojanTransportHost: outbound.transport.host ?? "",
+    };
+  }
+
+  if (outbound.protocol === "anytls") {
+    return {
+      ...nextDraft,
+      anytlsPassword: outbound.password,
+      anytlsClientFingerprint: outbound.clientFingerprint ?? "",
+      anytlsUdp: outbound.udp ?? true,
+      anytlsIdleSessionCheckInterval: outbound.idleSessionCheckInterval !== null && outbound.idleSessionCheckInterval !== undefined ? String(outbound.idleSessionCheckInterval) : "",
+      anytlsIdleSessionTimeout: outbound.idleSessionTimeout !== null && outbound.idleSessionTimeout !== undefined ? String(outbound.idleSessionTimeout) : "",
+      anytlsMinIdleSession: outbound.minIdleSession !== null && outbound.minIdleSession !== undefined ? String(outbound.minIdleSession) : "",
+      anytlsSni: outbound.sni ?? "",
+      anytlsAlpn: (outbound.alpn ?? []).join(","),
+      anytlsSkipCertVerify: !!outbound.skipCertVerify,
     };
   }
 
@@ -559,6 +625,26 @@ function App() {
         setRuntimeStatus(status);
         setMihomoVersion(version);
         setLastSavedAt("已从磁盘载入");
+
+        if (validation.valid && !status.running) {
+          try {
+            const portVal = await backend.validateRulePorts(state);
+            if (portVal.valid) {
+              const startStatus = await backend.startMihomo();
+              if (shouldUpdate) {
+                setRuntimeStatus(startStatus);
+                showToast("success", "已自动启动 Mihomo 代理内核");
+              }
+            } else {
+              showToast("warning", `自动启动内核失败：${portVal.message}`);
+            }
+          } catch (e) {
+            console.error("Auto-start Mihomo failed:", e);
+            if (shouldUpdate) {
+              showToast("warning", `自动启动内核失败：${getErrorMessage(e)}`);
+            }
+          }
+        }
       } catch (error) {
         if (shouldUpdate) {
           showToast("error", `启动时读取后端状态失败：${getErrorMessage(error)}`);
@@ -601,6 +687,23 @@ function App() {
     return { label: "已停止", detail: "已停止转发，等待开启代理服务", tone: "is-stopped" };
   }, [busyAction, runtimeStatus]);
 
+  const batchToggleMeta = useMemo(() => {
+    if (selectedRuleIds.length === 0) {
+      return { title: "批量启用/停用", icon: "play" as IconName };
+    }
+    const selectedRules = appState.rules.filter(r => selectedRuleIds.includes(r.id));
+    const allEnabled = selectedRules.every(r => r.enabled);
+    const allDisabled = selectedRules.every(r => !r.enabled);
+
+    if (allEnabled) {
+      return { title: "批量停用", icon: "stop" as IconName };
+    } else if (allDisabled) {
+      return { title: "批量启用", icon: "play" as IconName };
+    } else {
+      return { title: "批量停用", icon: "stop" as IconName };
+    }
+  }, [appState.rules, selectedRuleIds]);
+
   function showToast(tone: ToastTone, message: string) {
     setToastNotification({ id: Date.now(), tone, message });
   }
@@ -610,7 +713,7 @@ function App() {
     setAppState(result.state);
     setRuntimeStatus(result.status);
     setLastSavedAt(formatTime());
-    showToast("success", result.restarted ? "配置已保存并重启运行中的 Mihomo" : "配置已保存成功！");
+    showToast("success", result.restarted ? "配置已保存并重载运行中的 Mihomo" : "配置已保存成功！");
     return result.state;
   }
 
@@ -675,14 +778,27 @@ function App() {
     }
   }
 
-  async function toggleSelectedRulesEnabled(enabled: boolean) {
+  async function toggleSelectedRules() {
     if (selectedRuleIds.length === 0 || isBusy) return;
     setBusyAction("toggle");
     try {
-      const nextRules = appState.rules.map(r => selectedRuleIds.includes(r.id) ? { ...r, enabled } : r);
+      const selectedRules = appState.rules.filter(r => selectedRuleIds.includes(r.id));
+      const allEnabled = selectedRules.every(r => r.enabled);
+      const allDisabled = selectedRules.every(r => !r.enabled);
+
+      let targetEnabled: boolean;
+      if (allEnabled) {
+        targetEnabled = false;
+      } else if (allDisabled) {
+        targetEnabled = true;
+      } else {
+        targetEnabled = false;
+      }
+
+      const nextRules = appState.rules.map(r => selectedRuleIds.includes(r.id) ? { ...r, enabled: targetEnabled } : r);
       await saveAndApplyState({ ...appState, rules: nextRules });
     } catch (err) {
-      showToast("error", `批量操作失败：${getErrorMessage(err)}`);
+      showToast("error", `批量切换状态失败：${getErrorMessage(err)}`);
     } finally {
       setBusyAction("");
     }
@@ -874,6 +990,18 @@ function App() {
         trojanTransportKind: "tcp",
         trojanTransportPath: "",
         trojanTransportHost: "",
+
+        // AnyTLS defaults
+        anytlsPassword: "",
+        anytlsClientFingerprint: "",
+        anytlsUdp: true,
+        anytlsIdleSessionCheckInterval: "",
+        anytlsIdleSessionTimeout: "",
+        anytlsMinIdleSession: "",
+        anytlsSni: "",
+        anytlsAlpn: "",
+        anytlsSkipCertVerify: false,
+
         importedOutbound: null,
       }
     });
@@ -1073,6 +1201,8 @@ function App() {
       await saveAndApplyState(nextState);
       showToast("success", `批量导入已成功！共生成了 ${parseResults.length} 条端口与出口节点规则。`);
       setBatchAddOpen(false);
+      setBatchAddText("");
+      setBatchAddError("");
     } catch (err) {
       setBatchAddError(getErrorMessage(err));
     } finally {
@@ -1156,11 +1286,8 @@ function App() {
               <button className="ghost-button" onClick={toggleSelectAll} disabled={filteredRules.length === 0 || isBusy}>
                 <Icon name="check" />
               </button>
-              <button className="ghost-button" onClick={() => void toggleSelectedRulesEnabled(true)} disabled={selectedRuleIds.length === 0 || isBusy} title="批量启用">
-                <Icon name="play" />
-              </button>
-              <button className="ghost-button" onClick={() => void toggleSelectedRulesEnabled(false)} disabled={selectedRuleIds.length === 0 || isBusy} title="批量停用">
-                <Icon name="stop" />
+              <button className="ghost-button" onClick={() => void toggleSelectedRules()} disabled={selectedRuleIds.length === 0 || isBusy} title={batchToggleMeta.title}>
+                <Icon name={batchToggleMeta.icon} />
               </button>
               <button className="ghost-button" onClick={openCreateRuleModal} disabled={isBusy} title="添加规则">
                 <Icon name="plus" />
@@ -1761,6 +1888,91 @@ function App() {
                             </label>
                           </>
                         )}
+                      </>
+                    )}
+
+                    {/* AnyTLS specific */}
+                    {ruleModal.draft.outboundProtocol === "anytls" && (
+                      <>
+                        <label className="field wide-field">
+                          <span>连接密码 (password)</span>
+                          <input
+                            type="password"
+                            value={ruleModal.draft.anytlsPassword}
+                            onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, anytlsPassword: e.currentTarget.value } })}
+                            required
+                          />
+                        </label>
+                        <label className="field">
+                          <span>ServerName (SNI)</span>
+                          <input
+                            type="text"
+                            value={ruleModal.draft.anytlsSni}
+                            onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, anytlsSni: e.currentTarget.value } })}
+                            placeholder="domain.com"
+                          />
+                        </label>
+                        <label className="field">
+                          <span>Fingerprint</span>
+                          <input
+                            type="text"
+                            value={ruleModal.draft.anytlsClientFingerprint}
+                            onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, anytlsClientFingerprint: e.currentTarget.value } })}
+                            placeholder="chrome"
+                          />
+                        </label>
+                        <label className="field">
+                          <span>ALPN (逗号分隔)</span>
+                          <input
+                            type="text"
+                            value={ruleModal.draft.anytlsAlpn}
+                            onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, anytlsAlpn: e.currentTarget.value } })}
+                            placeholder="h2,http/1.1"
+                          />
+                        </label>
+                        <label className="field">
+                          <span>空闲连接检查间隔 (秒)</span>
+                          <input
+                            type="number"
+                            value={ruleModal.draft.anytlsIdleSessionCheckInterval}
+                            onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, anytlsIdleSessionCheckInterval: e.currentTarget.value } })}
+                            placeholder="30"
+                          />
+                        </label>
+                        <label className="field">
+                          <span>空闲会话超时 (秒)</span>
+                          <input
+                            type="number"
+                            value={ruleModal.draft.anytlsIdleSessionTimeout}
+                            onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, anytlsIdleSessionTimeout: e.currentTarget.value } })}
+                            placeholder="30"
+                          />
+                        </label>
+                        <label className="field">
+                          <span>最小空闲会话数</span>
+                          <input
+                            type="number"
+                            value={ruleModal.draft.anytlsMinIdleSession}
+                            onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, anytlsMinIdleSession: e.currentTarget.value } })}
+                            placeholder="0"
+                          />
+                        </label>
+                        <label className="toggle-field wide-field">
+                          <input
+                            type="checkbox"
+                            checked={ruleModal.draft.anytlsUdp}
+                            onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, anytlsUdp: e.currentTarget.checked } })}
+                          />
+                          <span>启用 UDP 转发</span>
+                        </label>
+                        <label className="toggle-field wide-field">
+                          <input
+                            type="checkbox"
+                            checked={ruleModal.draft.anytlsSkipCertVerify}
+                            onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, anytlsSkipCertVerify: e.currentTarget.checked } })}
+                          />
+                          <span>忽略证书校验错误 (skip-cert-verify)</span>
+                        </label>
                       </>
                     )}
                   </div>
