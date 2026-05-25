@@ -1,358 +1,215 @@
 use serde_json::{json, Value};
 use crate::models::{
-    AppState, CommandResult, InboundProtocol, OutboundConfig, SocksOutboundConfig,
-    VlessOutboundConfig, VlessTransportKind, ShadowsocksOutboundConfig, ProxyRule,
-    TrojanOutboundConfig, TrojanTransportKind
+    AppState, CommandResult, OutboundConfig
 };
-use crate::utils::XRAY_API_PORT;
 
 pub fn generate_config_value(state: &AppState) -> CommandResult<Value> {
     crate::models::validate_state(state)?;
 
-    let enabled_rules = state.rules.iter().filter(|rule| rule.enabled);
-    let mut inbounds = Vec::new();
-    let mut outbounds = Vec::new();
-    let mut routing_rules = Vec::new();
+    let mut listeners = Vec::new();
+    let mut proxies = Vec::new();
+    let mut proxy_groups = Vec::new();
 
-    // Add Xray API loopback inbound
-    inbounds.push(json!({
-        "listen": "127.0.0.1",
-        "port": XRAY_API_PORT,
-        "protocol": "dokodemo-door",
-        "settings": {
-            "address": "127.0.0.1"
-        },
-        "tag": "api-inbound"
-    }));
+    // 1. 生成 listeners
+    for rule in state.rules.iter().filter(|r| r.enabled) {
+        // 查找对应的代理组名称
+        let group = state.groups.iter().find(|g| g.id == rule.group_id)
+            .ok_or_else(|| format!("Rule '{}' refers to non-existent group '{}'", rule.name, rule.group_id))?;
+        
+        let listener = json!({
+            "name": format!("listener-{}", rule.id),
+            "type": rule.inbound_type,
+            "listen": rule.listen,
+            "port": rule.port,
+            "proxy": group.name,
+        });
 
-    // Add API virtual outbound
-    outbounds.push(json!({
-        "protocol": "freedom",
-        "tag": "api"
-    }));
-
-    // Add API routing rule at the very top of rules list
-    routing_rules.push(json!({
-        "type": "field",
-        "inboundTag": ["api-inbound"],
-        "outboundTag": "api"
-    }));
-
-    for rule in enabled_rules {
-        let inbound_tag = inbound_tag(&rule.id);
-        let outbound_tag = outbound_tag(&rule.id);
-        inbounds.push(generate_inbound(rule, &inbound_tag));
-        outbounds.push(generate_outbound(rule, &outbound_tag));
-        routing_rules.push(json!({
-            "type": "field",
-            "inboundTag": [inbound_tag],
-            "outboundTag": outbound_tag,
-        }));
+        listeners.push(listener);
     }
 
+    // 2. 生成 proxies
+    for node in &state.proxies {
+        let proxy = generate_mihomo_proxy(node)?;
+        proxies.push(proxy);
+    }
+
+    // 3. 生成 proxy-groups
+    for group in &state.groups {
+        let pg = json!({
+            "name": group.name,
+            "type": group.group_type, // "select"
+            "proxies": group.proxies,
+        });
+        proxy_groups.push(pg);
+    }
+
+    // 4. 组装全局配置
     Ok(json!({
-        "log": {
-            "loglevel": "warning"
-        },
-        "api": {
-            "tag": "api",
-            "services": ["StatsService"]
-        },
-        "stats": {},
-        "policy": {
-            "system": {
-                "statsInboundUplink": true,
-                "statsInboundDownlink": true
-            }
-        },
-        "inbounds": inbounds,
-        "outbounds": outbounds,
-        "routing": {
-            "rules": routing_rules
-        }
+        "mixed-port": 37890,
+        "allow-lan": false,
+        "mode": "rule",
+        "log-level": "warning",
+        "listeners": listeners,
+        "proxies": proxies,
+        "proxy-groups": proxy_groups,
+        "rules": [
+            "MATCH,DIRECT"
+        ]
     }))
 }
 
-pub fn generate_inbound(rule: &ProxyRule, tag: &str) -> Value {
-    match rule.inbound.protocol {
-        InboundProtocol::Socks => {
-            let mut settings = json!({
-                "auth": "noauth",
-                "udp": false
-            });
+fn generate_mihomo_proxy(node: &crate::models::ProxyNode) -> CommandResult<Value> {
+    let mut val = serde_json::Map::new();
+    val.insert("name".to_string(), json!(node.name));
 
-            if let Some(auth) = &rule.inbound.auth {
-                settings = json!({
-                    "auth": "password",
-                    "udp": false,
-                    "users": [{
-                        "user": auth.username,
-                        "pass": auth.password,
-                    }]
-                });
+    match &node.config {
+        OutboundConfig::Socks(config) => {
+            val.insert("type".to_string(), json!("socks"));
+            val.insert("server".to_string(), json!(config.host));
+            val.insert("port".to_string(), json!(config.port));
+            if let Some(auth) = &config.auth {
+                val.insert("username".to_string(), json!(auth.username));
+                val.insert("password".to_string(), json!(auth.password));
+            }
+        }
+        OutboundConfig::Shadowsocks(config) => {
+            val.insert("type".to_string(), json!("ss"));
+            val.insert("server".to_string(), json!(config.address));
+            val.insert("port".to_string(), json!(config.port));
+            val.insert("cipher".to_string(), json!(config.method));
+            val.insert("password".to_string(), json!(config.password));
+            val.insert("udp".to_string(), json!(true));
+        }
+        OutboundConfig::Vless(config) => {
+            val.insert("type".to_string(), json!("vless"));
+            val.insert("server".to_string(), json!(config.address));
+            val.insert("port".to_string(), json!(config.port));
+            val.insert("uuid".to_string(), json!(config.id));
+            val.insert("cipher".to_string(), json!("auto"));
+            val.insert("udp".to_string(), json!(true));
+
+            if let Some(flow) = &config.flow {
+                if !flow.trim().is_empty() {
+                    val.insert("flow".to_string(), json!(flow));
+                }
             }
 
-            json!({
-                "tag": tag,
-                "protocol": "socks",
-                "listen": rule.inbound.listen,
-                "port": rule.inbound.port,
-                "settings": settings,
-            })
-        }
-        InboundProtocol::Http => {
-            let users = rule
-                .inbound
-                .auth
-                .as_ref()
-                .map(|auth| {
-                    json!([{
-                        "user": auth.username,
-                        "pass": auth.password,
-                    }])
-                })
-                .unwrap_or_else(|| json!([]));
+            let network = match config.transport.kind {
+                crate::models::VlessTransportKind::Tcp => "tcp",
+                crate::models::VlessTransportKind::Ws => "ws",
+            };
+            val.insert("network".to_string(), json!(network));
 
-            json!({
-                "tag": tag,
-                "protocol": "http",
-                "listen": rule.inbound.listen,
-                "port": rule.inbound.port,
-                "settings": {
-                    "users": users
-                },
-            })
-        }
-    }
-}
+            if config.transport.kind == crate::models::VlessTransportKind::Ws {
+                let mut ws_opts = serde_json::Map::new();
+                if let Some(path) = &config.transport.path {
+                    ws_opts.insert("path".to_string(), json!(path));
+                }
+                if let Some(host) = &config.transport.host {
+                    let mut headers = serde_json::Map::new();
+                    headers.insert("Host".to_string(), json!(host));
+                    ws_opts.insert("headers".to_string(), json!(headers));
+                }
+                val.insert("ws-opts".to_string(), Value::Object(ws_opts));
+            }
 
-pub fn generate_outbound(rule: &ProxyRule, tag: &str) -> Value {
-    match &rule.outbound {
-        OutboundConfig::Socks(config) => generate_socks_outbound(config, tag),
-        OutboundConfig::Vless(config) => generate_vless_outbound(config, tag),
-        OutboundConfig::Shadowsocks(config) => generate_shadowsocks_outbound(config, tag),
-        OutboundConfig::Trojan(config) => generate_trojan_outbound(config, tag),
-    }
-}
+            if let Some(tls) = &config.tls {
+                val.insert("tls".to_string(), json!(true));
+                if let Some(server_name) = &tls.server_name {
+                    if !server_name.trim().is_empty() {
+                        val.insert("servername".to_string(), json!(server_name));
+                    }
+                }
+                if let Some(allow_insecure) = tls.allow_insecure {
+                    val.insert("skip-cert-verify".to_string(), json!(allow_insecure));
+                }
+                if let Some(fp) = &tls.fingerprint {
+                    if !fp.trim().is_empty() {
+                        val.insert("client-fingerprint".to_string(), json!(fp));
+                    }
+                }
+            } else if let Some(reality) = &config.reality {
+                val.insert("tls".to_string(), json!(true));
+                if let Some(server_name) = &reality.server_name {
+                    if !server_name.trim().is_empty() {
+                        val.insert("servername".to_string(), json!(server_name));
+                    }
+                }
+                if let Some(fp) = &reality.fingerprint {
+                    if !fp.trim().is_empty() {
+                        val.insert("client-fingerprint".to_string(), json!(fp));
+                    }
+                }
+                let mut reality_opts = serde_json::Map::new();
+                reality_opts.insert("public-key".to_string(), json!(reality.public_key));
+                if let Some(short_id) = &reality.short_id {
+                    reality_opts.insert("short-id".to_string(), json!(short_id));
+                }
+                val.insert("reality-opts".to_string(), Value::Object(reality_opts));
+            }
+        }
+        OutboundConfig::Trojan(config) => {
+            val.insert("type".to_string(), json!("trojan"));
+            val.insert("server".to_string(), json!(config.address));
+            val.insert("port".to_string(), json!(config.port));
+            val.insert("password".to_string(), json!(config.password));
+            val.insert("udp".to_string(), json!(true));
 
-pub fn generate_trojan_outbound(config: &TrojanOutboundConfig, tag: &str) -> Value {
-    let mut server = json!({
-        "address": config.address,
-        "port": config.port,
-        "password": config.password,
-    });
-    if let Some(email) = &config.email {
-        server["email"] = json!(email);
-    }
-    if let Some(level) = config.level {
-        server["level"] = json!(level);
-    }
+            let network = match config.transport.kind {
+                crate::models::TrojanTransportKind::Tcp => "tcp",
+                crate::models::TrojanTransportKind::Ws => "ws",
+            };
+            val.insert("network".to_string(), json!(network));
 
-    let mut outbound = json!({
-        "tag": tag,
-        "protocol": "trojan",
-        "settings": {
-            "servers": [server]
-        },
-    });
+            if config.transport.kind == crate::models::TrojanTransportKind::Ws {
+                let mut ws_opts = serde_json::Map::new();
+                if let Some(path) = &config.transport.path {
+                    ws_opts.insert("path".to_string(), json!(path));
+                }
+                if let Some(host) = &config.transport.host {
+                    let mut headers = serde_json::Map::new();
+                    headers.insert("Host".to_string(), json!(host));
+                    ws_opts.insert("headers".to_string(), json!(headers));
+                }
+                val.insert("ws-opts".to_string(), Value::Object(ws_opts));
+            }
 
-    let network = match config.transport.kind {
-        TrojanTransportKind::Tcp => "tcp",
-        TrojanTransportKind::Ws => "ws",
-    };
-
-    let mut stream_settings = json!({
-        "network": network,
-    });
-
-    if config.transport.kind == TrojanTransportKind::Ws {
-        let mut ws_settings = json!({});
-        if let Some(path) = &config.transport.path {
-            ws_settings["path"] = json!(path);
-        }
-        if let Some(host) = &config.transport.host {
-            ws_settings["headers"] = json!({
-                "Host": host
-            });
-        }
-        stream_settings["wsSettings"] = ws_settings;
-    }
-
-    if let Some(tls) = &config.tls {
-        stream_settings["security"] = json!("tls");
-        let mut tls_settings = json!({});
-        if let Some(server_name) = tls.server_name.as_deref().filter(|value| !value.is_empty()) {
-            tls_settings["serverName"] = json!(server_name);
-        }
-        if let Some(fingerprint) = tls.fingerprint.as_deref().filter(|value| !value.is_empty()) {
-            tls_settings["fingerprint"] = json!(fingerprint);
-        }
-        if let Some(allow_insecure) = tls.allow_insecure {
-            tls_settings["allowInsecure"] = json!(allow_insecure);
-        }
-        stream_settings["tlsSettings"] = tls_settings;
-        outbound["streamSettings"] = stream_settings;
-    } else if let Some(reality) = &config.reality {
-        stream_settings["security"] = json!("reality");
-        let mut reality_settings = json!({
-            "publicKey": reality.public_key,
-        });
-        if let Some(server_name) = reality.server_name.as_deref().filter(|value| !value.is_empty()) {
-            reality_settings["serverName"] = json!(server_name);
-        }
-        if let Some(fingerprint) = reality.fingerprint.as_deref().filter(|value| !value.is_empty()) {
-            reality_settings["fingerprint"] = json!(fingerprint);
-        }
-        if let Some(short_id) = reality.short_id.as_deref().filter(|value| !value.is_empty()) {
-            reality_settings["shortId"] = json!(short_id);
-        }
-        if let Some(spider_x) = reality.spider_x.as_deref().filter(|value| !value.is_empty()) {
-            reality_settings["spiderX"] = json!(spider_x);
-        }
-        stream_settings["realitySettings"] = reality_settings;
-        outbound["streamSettings"] = stream_settings;
-    } else {
-        if config.transport.kind == TrojanTransportKind::Ws {
-            outbound["streamSettings"] = stream_settings;
+            if let Some(tls) = &config.tls {
+                val.insert("tls".to_string(), json!(true));
+                if let Some(server_name) = &tls.server_name {
+                    if !server_name.trim().is_empty() {
+                        val.insert("servername".to_string(), json!(server_name));
+                    }
+                }
+                if let Some(allow_insecure) = tls.allow_insecure {
+                    val.insert("skip-cert-verify".to_string(), json!(allow_insecure));
+                }
+                if let Some(fp) = &tls.fingerprint {
+                    if !fp.trim().is_empty() {
+                        val.insert("client-fingerprint".to_string(), json!(fp));
+                    }
+                }
+            } else if let Some(reality) = &config.reality {
+                val.insert("tls".to_string(), json!(true));
+                if let Some(server_name) = &reality.server_name {
+                    if !server_name.trim().is_empty() {
+                        val.insert("servername".to_string(), json!(server_name));
+                    }
+                }
+                if let Some(fp) = &reality.fingerprint {
+                    if !fp.trim().is_empty() {
+                        val.insert("client-fingerprint".to_string(), json!(fp));
+                    }
+                }
+                let mut reality_opts = serde_json::Map::new();
+                reality_opts.insert("public-key".to_string(), json!(reality.public_key));
+                if let Some(short_id) = &reality.short_id {
+                    reality_opts.insert("short-id".to_string(), json!(short_id));
+                }
+                val.insert("reality-opts".to_string(), Value::Object(reality_opts));
+            }
         }
     }
 
-    outbound
-}
-
-pub fn generate_socks_outbound(config: &SocksOutboundConfig, tag: &str) -> Value {
-    let mut server = json!({
-        "address": config.host,
-        "port": config.port,
-    });
-
-    if let Some(auth) = &config.auth {
-        if let Some(object) = server.as_object_mut() {
-            object.insert(
-                "users".to_string(),
-                json!([{ "user": auth.username, "pass": auth.password }]),
-            );
-        }
-    }
-
-    json!({
-        "tag": tag,
-        "protocol": "socks",
-        "settings": {
-            "servers": [server]
-        },
-    })
-}
-
-pub fn generate_vless_outbound(config: &VlessOutboundConfig, tag: &str) -> Value {
-    let mut settings = json!({
-        "address": config.address,
-        "port": config.port,
-        "id": config.id,
-        "encryption": config.encryption,
-    });
-    if let Some(flow) = config.flow.as_deref().filter(|flow| !flow.is_empty()) {
-        settings["flow"] = json!(flow);
-    }
-    if let Some(level) = config.level {
-        settings["level"] = json!(level);
-    }
-
-    let mut outbound = json!({
-        "tag": tag,
-        "protocol": "vless",
-        "settings": settings,
-    });
-
-    let network = match config.transport.kind {
-        VlessTransportKind::Tcp => "tcp",
-        VlessTransportKind::Ws => "ws",
-    };
-
-    let mut stream_settings = json!({
-        "network": network,
-    });
-
-    if config.transport.kind == VlessTransportKind::Ws {
-        let mut ws_settings = json!({});
-        if let Some(path) = &config.transport.path {
-            ws_settings["path"] = json!(path);
-        }
-        if let Some(host) = &config.transport.host {
-            ws_settings["headers"] = json!({
-                "Host": host
-            });
-        }
-        stream_settings["wsSettings"] = ws_settings;
-    }
-
-    if let Some(tls) = &config.tls {
-        stream_settings["security"] = json!("tls");
-        let mut tls_settings = json!({});
-        if let Some(server_name) = tls.server_name.as_deref().filter(|value| !value.is_empty()) {
-            tls_settings["serverName"] = json!(server_name);
-        }
-        if let Some(fingerprint) = tls.fingerprint.as_deref().filter(|value| !value.is_empty()) {
-            tls_settings["fingerprint"] = json!(fingerprint);
-        }
-        if let Some(allow_insecure) = tls.allow_insecure {
-            tls_settings["allowInsecure"] = json!(allow_insecure);
-        }
-        stream_settings["tlsSettings"] = tls_settings;
-        outbound["streamSettings"] = stream_settings;
-    } else if let Some(reality) = &config.reality {
-        stream_settings["security"] = json!("reality");
-        let mut reality_settings = json!({
-            "publicKey": reality.public_key,
-        });
-        if let Some(server_name) = reality.server_name.as_deref().filter(|value| !value.is_empty()) {
-            reality_settings["serverName"] = json!(server_name);
-        }
-        if let Some(fingerprint) = reality.fingerprint.as_deref().filter(|value| !value.is_empty()) {
-            reality_settings["fingerprint"] = json!(fingerprint);
-        }
-        if let Some(short_id) = reality.short_id.as_deref().filter(|value| !value.is_empty()) {
-            reality_settings["shortId"] = json!(short_id);
-        }
-        if let Some(spider_x) = reality.spider_x.as_deref().filter(|value| !value.is_empty()) {
-            reality_settings["spiderX"] = json!(spider_x);
-        }
-        stream_settings["realitySettings"] = reality_settings;
-        outbound["streamSettings"] = stream_settings;
-    } else {
-        if config.transport.kind == VlessTransportKind::Ws {
-            outbound["streamSettings"] = stream_settings;
-        }
-    }
-
-    outbound
-}
-
-pub fn generate_shadowsocks_outbound(config: &ShadowsocksOutboundConfig, tag: &str) -> Value {
-    let mut settings = json!({
-        "address": config.address,
-        "port": config.port,
-        "method": config.method,
-        "password": config.password,
-    });
-    if config.uot {
-        settings["uot"] = json!(true);
-        if let Some(version) = config.uot_version {
-            settings["UoTVersion"] = json!(version);
-        }
-    }
-
-    json!({
-        "tag": tag,
-        "protocol": "shadowsocks",
-        "settings": settings,
-    })
-}
-
-pub fn inbound_tag(rule_id: &str) -> String {
-    format!("inbound-{rule_id}")
-}
-
-pub fn outbound_tag(rule_id: &str) -> String {
-    format!("outbound-{rule_id}")
+    Ok(Value::Object(val))
 }

@@ -8,14 +8,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use crate::models::{
-    AppState, CommandResult, InboundConfig, InboundProtocol, NewRuleRequest,
-    PortValidation, ProxyRule, RuntimePaths,
+    AppState, CommandResult, ListenerRule, PortValidation, RuntimePaths,
 };
 
 pub const STATE_FILE_NAME: &str = "app-state.json";
-pub const GENERATED_CONFIG_FILE_NAME: &str = "generated-config.json";
+pub const GENERATED_CONFIG_FILE_NAME: &str = "generated-config.yaml";
 pub const DEFAULT_LISTEN_ADDRESS: &str = "127.0.0.1";
-pub const XRAY_API_PORT: u16 = 10085;
 pub const MIN_AUTO_PORT: u16 = 50_000;
 pub const MAX_AUTO_PORT: u16 = 65_535;
 
@@ -75,20 +73,20 @@ pub fn write_app_state_to_disk(state: &AppState) -> CommandResult<AppState> {
 pub fn write_generated_config_to_disk(state: &AppState) -> CommandResult<PathBuf> {
     let config = crate::config::generate_config_value(state)?;
     let paths = ensure_data_dir()?;
-    let config_text = serde_json::to_string_pretty(&config)
-        .map_err(|error| format!("Failed to serialize generated Xray config: {error}"))?;
+    let config_text = serde_yaml::to_string(&config)
+        .map_err(|error| format!("Failed to serialize generated Mihomo config: {error}"))?;
     fs::write(&paths.generated_config_path, config_text)
-        .map_err(|error| format!("Failed to write generated Xray config: {error}"))?;
+        .map_err(|error| format!("Failed to write generated Mihomo config: {error}"))?;
     Ok(paths.generated_config_path)
 }
 
-pub fn duplicate_port_validation(rules: &[ProxyRule]) -> PortValidation {
+pub fn duplicate_port_validation(rules: &[ListenerRule]) -> PortValidation {
     let mut seen = HashSet::new();
     let mut duplicates = HashSet::new();
 
     for rule in rules.iter().filter(|rule| rule.enabled) {
-        if !seen.insert(rule.inbound.port) {
-            duplicates.insert(rule.inbound.port);
+        if !seen.insert(rule.port) {
+            duplicates.insert(rule.port);
         }
     }
 
@@ -99,15 +97,15 @@ pub fn duplicate_port_validation(rules: &[ProxyRule]) -> PortValidation {
 }
 
 pub fn port_validation_with_availability(
-    rules: &[ProxyRule],
+    rules: &[ListenerRule],
     duplicate_ports: Vec<u16>,
 ) -> PortValidation {
     let mut unavailable_ports = Vec::new();
     for rule in rules.iter().filter(|rule| rule.enabled) {
-        if !is_port_available(&rule.inbound.listen, rule.inbound.port)
-            && !unavailable_ports.contains(&rule.inbound.port)
+        if !is_port_available(&rule.listen, rule.port)
+            && !unavailable_ports.contains(&rule.port)
         {
-            unavailable_ports.push(rule.inbound.port);
+            unavailable_ports.push(rule.port);
         }
     }
     unavailable_ports.sort_unstable();
@@ -154,11 +152,11 @@ fn can_bind(address: SocketAddr) -> bool {
     TcpListener::bind(address).is_ok()
 }
 
-pub fn choose_unused_port(existing_rules: &[ProxyRule]) -> CommandResult<u16> {
+pub fn choose_unused_port(existing_rules: &[ListenerRule]) -> CommandResult<u16> {
     let used_ports = existing_rules
         .iter()
         .filter(|rule| rule.enabled)
-        .map(|rule| rule.inbound.port)
+        .map(|rule| rule.port)
         .collect::<HashSet<_>>();
     let total_ports = u32::from(MAX_AUTO_PORT - MIN_AUTO_PORT) + 1;
     let start_offset = random_port_offset(total_ports);
@@ -197,41 +195,14 @@ pub fn normalize_country_code(country: Option<String>) -> Option<String> {
     }
 }
 
-pub fn build_proxy_url(inbound: &InboundConfig) -> String {
-    let scheme = match inbound.protocol {
-        InboundProtocol::Socks => "socks5h",
-        InboundProtocol::Http => "http",
+pub fn build_proxy_url(listen: &str, port: u16, inbound_type: &str) -> String {
+    let scheme = match inbound_type {
+        "socks" => "socks5h",
+        "http" => "http",
+        _ => "socks5h", // default to socks5h for mixed type URL representation
     };
 
-    format!("{scheme}://{}:{}", inbound.listen, inbound.port)
-}
-
-pub fn create_rule(request: NewRuleRequest, existing_rules: &[ProxyRule]) -> CommandResult<ProxyRule> {
-    crate::models::validate_auth(request.inbound_auth.as_ref())?;
-
-    let inbound_port = match request.inbound_port {
-        Some(port) => port,
-        None => choose_unused_port(existing_rules)?,
-    };
-
-    let rule = ProxyRule {
-        id: new_rule_id(),
-        remark: request.remark.unwrap_or_default(),
-        enabled: request.enabled.unwrap_or(true),
-        inbound: InboundConfig {
-            protocol: request.inbound_protocol.unwrap_or(InboundProtocol::Socks),
-            listen: request
-                .inbound_listen
-                .unwrap_or_else(|| DEFAULT_LISTEN_ADDRESS.to_string()),
-            port: inbound_port,
-            auth: request.inbound_auth,
-        },
-        outbound: request.outbound,
-        ip_check: None,
-    };
-
-    crate::models::validate_rule(&rule)?;
-    Ok(rule)
+    format!("{scheme}://{}:{}", listen, port)
 }
 
 pub fn new_rule_id() -> String {

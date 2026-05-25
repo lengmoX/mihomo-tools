@@ -22,6 +22,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 reqwest = { version = "0.13.3", default-features = false, features = ["blocking", "json", "rustls", "socks"] }
 base64 = "0.22"
 percent-encoding = "2"

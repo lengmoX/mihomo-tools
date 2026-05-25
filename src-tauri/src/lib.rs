@@ -7,11 +7,11 @@ pub mod ip_check;
 pub mod commands;
 
 pub use models::{
-    AppState, AuthConfig, InboundConfig, InboundProtocol, IpCheckResult, OutboundConfig,
-    ProxyRule, ShadowsocksOutboundConfig, SocksOutboundConfig, VlessOutboundConfig,
+    AppState, AuthConfig, IpCheckResult, OutboundConfig,
+    ShadowsocksOutboundConfig, SocksOutboundConfig, VlessOutboundConfig,
     VlessRealityConfig, VlessTlsConfig, VlessTransportConfig, VlessTransportKind,
     TrojanOutboundConfig, TrojanTlsConfig, TrojanRealityConfig, TrojanTransportConfig, TrojanTransportKind,
-    SCHEMA_VERSION,
+    ListenerRule, ProxyNode, ProxyGroup, SCHEMA_VERSION,
 };
 pub use parser::{parse_socks_url, parse_outbound_url_value};
 pub use utils::{duplicate_port_validation, DEFAULT_LISTEN_ADDRESS};
@@ -36,6 +36,14 @@ pub fn run() {
             commands::check_rule_ip,
             commands::check_rules_ip_batch,
             commands::delete_rule,
+            commands::add_proxy_node,
+            commands::update_proxy_node,
+            commands::analyze_proxy_deletion,
+            commands::delete_proxy_node_safe,
+            commands::add_proxy_group,
+            commands::update_proxy_group,
+            commands::analyze_proxy_group_deletion,
+            commands::delete_proxy_group_safe,
             commands::parse_outbound_url,
             commands::parse_socks_outbound_url,
             commands::parse_socks_proxy_url,
@@ -72,63 +80,46 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn sample_rule(id: &str, port: u16) -> ProxyRule {
-        ProxyRule {
-            id: id.to_string(),
-            remark: "Test rule".to_string(),
-            enabled: true,
-            inbound: InboundConfig {
-                protocol: InboundProtocol::Socks,
-                listen: DEFAULT_LISTEN_ADDRESS.to_string(),
-                port,
-                auth: None,
-            },
-            outbound: OutboundConfig::Socks(SocksOutboundConfig {
+    fn sample_state_with_socks(id: &str, rule_port: u16) -> AppState {
+        let proxy_id = format!("proxy-{}", id);
+        let group_id = format!("group-{}", id);
+        let proxy_name = format!("Proxy-{}", id);
+        let group_name = format!("Group-{}", id);
+
+        let proxy = ProxyNode {
+            id: proxy_id,
+            name: proxy_name.clone(),
+            config: OutboundConfig::Socks(SocksOutboundConfig {
                 host: "proxy.example".to_string(),
                 port: 1080,
                 auth: None,
             }),
+        };
+
+        let group = ProxyGroup {
+            id: group_id.clone(),
+            name: group_name,
+            group_type: "select".to_string(),
+            proxies: vec![proxy_name],
+        };
+
+        let rule = ListenerRule {
+            id: id.to_string(),
+            name: "Test rule".to_string(),
+            listen: DEFAULT_LISTEN_ADDRESS.to_string(),
+            port: rule_port,
+            inbound_type: "mixed".to_string(),
+            group_id,
+            enabled: true,
             ip_check: None,
+        };
+
+        AppState {
+            schema_version: SCHEMA_VERSION,
+            proxies: vec![proxy],
+            groups: vec![group],
+            rules: vec![rule],
         }
-    }
-
-    fn sample_vless_rule(id: &str, port: u16) -> ProxyRule {
-        let mut rule = sample_rule(id, port);
-        rule.outbound = OutboundConfig::Vless(VlessOutboundConfig {
-            address: "vless.example".to_string(),
-            port: 443,
-            id: "5783a3e7-e373-51cd-8642-c83782b807c5".to_string(),
-            encryption: "none".to_string(),
-            flow: Some("xtls-rprx-vision".to_string()),
-            level: Some(1),
-            transport: VlessTransportConfig {
-                kind: VlessTransportKind::Tcp,
-                path: None,
-                host: None,
-            },
-            tls: Some(VlessTlsConfig {
-                server_name: Some("vless.example".to_string()),
-                fingerprint: Some("chrome".to_string()),
-                allow_insecure: None,
-            }),
-            reality: None,
-            import_source: None,
-        });
-        rule
-    }
-
-    fn sample_shadowsocks_rule(id: &str, port: u16) -> ProxyRule {
-        let mut rule = sample_rule(id, port);
-        rule.outbound = OutboundConfig::Shadowsocks(ShadowsocksOutboundConfig {
-            address: "ss.example".to_string(),
-            port: 8388,
-            method: "aes-256-gcm".to_string(),
-            password: "secret".to_string(),
-            uot: true,
-            uot_version: Some(2),
-            import_source: None,
-        });
-        rule
     }
 
     #[test]
@@ -284,7 +275,9 @@ mod tests {
 
     #[test]
     fn detects_duplicate_local_ports() {
-        let rules = vec![sample_rule("one", 50001), sample_rule("two", 50001)];
+        let state1 = sample_state_with_socks("one", 50001);
+        let state2 = sample_state_with_socks("two", 50001);
+        let rules = vec![state1.rules[0].clone(), state2.rules[0].clone()];
         let validation = duplicate_port_validation(&rules);
 
         assert!(validation.has_duplicate_ports);
@@ -293,81 +286,82 @@ mod tests {
 
     #[test]
     fn generated_config_omits_disabled_rules() {
-        let enabled_rule = sample_rule("enabled-rule", 50001);
-        let mut disabled_rule = sample_rule("disabled-rule", 50002);
+        let mut state = sample_state_with_socks("rule", 50001);
+        let mut disabled_rule = state.rules[0].clone();
+        disabled_rule.id = "disabled-rule".to_string();
+        disabled_rule.port = 50002;
         disabled_rule.enabled = false;
-        let state = AppState {
-            schema_version: SCHEMA_VERSION,
-            rules: vec![enabled_rule, disabled_rule],
-        };
+        state.rules.push(disabled_rule);
 
         let config = generate_config_value(&state).expect("config generation");
 
-        assert_eq!(config["inbounds"].as_array().expect("inbounds").len(), 2);
-        assert_eq!(config["outbounds"].as_array().expect("outbounds").len(), 2);
-        assert_eq!(
-            config["routing"]["rules"].as_array().expect("rules").len(),
-            2
-        );
-        assert_eq!(config["inbounds"][1]["tag"], "inbound-enabled-rule");
+        assert_eq!(config["listeners"].as_array().expect("listeners").len(), 1);
+        assert_eq!(config["listeners"][0]["name"], "listener-rule");
     }
 
     #[test]
     fn generated_config_uses_stable_tags_and_expected_shape() {
-        let mut http_rule = sample_rule("http-rule", 50002);
-        http_rule.inbound.protocol = InboundProtocol::Http;
-        http_rule.inbound.auth = Some(AuthConfig {
-            username: "local".to_string(),
-            password: "pass".to_string(),
-        });
-        http_rule.outbound = OutboundConfig::Socks(SocksOutboundConfig {
-            host: "proxy.example".to_string(),
-            port: 1080,
-            auth: Some(AuthConfig {
-                username: "upstream".to_string(),
-                password: "secret".to_string(),
-            }),
-        });
+        let mut state = sample_state_with_socks("socks-rule", 50001);
 
-        let state = AppState {
-            schema_version: SCHEMA_VERSION,
-            rules: vec![sample_rule("socks-rule", 50001), http_rule],
+        let proxy_id = "proxy-http".to_string();
+        let group_id = "group-http".to_string();
+        let proxy_name = "Proxy-Http".to_string();
+        let group_name = "Group-Http".to_string();
+
+        let proxy = ProxyNode {
+            id: proxy_id,
+            name: proxy_name.clone(),
+            config: OutboundConfig::Socks(SocksOutboundConfig {
+                host: "proxy.example".to_string(),
+                port: 1080,
+                auth: Some(AuthConfig {
+                    username: "upstream".to_string(),
+                    password: "secret".to_string(),
+                }),
+            }),
         };
+
+        let group = ProxyGroup {
+            id: group_id.clone(),
+            name: group_name,
+            group_type: "select".to_string(),
+            proxies: vec![proxy_name],
+        };
+
+        let rule = ListenerRule {
+            id: "http-rule".to_string(),
+            name: "HTTP Rule".to_string(),
+            listen: DEFAULT_LISTEN_ADDRESS.to_string(),
+            port: 50002,
+            inbound_type: "http".to_string(),
+            group_id,
+            enabled: true,
+            ip_check: None,
+        };
+
+        state.proxies.push(proxy);
+        state.groups.push(group);
+        state.rules.push(rule);
 
         let config = generate_config_value(&state).expect("config generation");
 
-        assert_eq!(config["inbounds"].as_array().expect("inbounds").len(), 3);
-        assert_eq!(config["outbounds"].as_array().expect("outbounds").len(), 3);
-        assert_eq!(
-            config["routing"]["rules"].as_array().expect("rules").len(),
-            3
-        );
-        assert_eq!(config["inbounds"][1]["tag"], "inbound-socks-rule");
-        assert_eq!(config["outbounds"][1]["tag"], "outbound-socks-rule");
-        assert_eq!(
-            config["routing"]["rules"][1]["inboundTag"][0],
-            "inbound-socks-rule"
-        );
-        assert_eq!(
-            config["routing"]["rules"][1]["outboundTag"],
-            "outbound-socks-rule"
-        );
-        assert_eq!(config["inbounds"][1]["settings"]["auth"], "noauth");
-        assert_eq!(config["inbounds"][1]["settings"]["udp"], false);
-        assert_eq!(config["inbounds"][2]["protocol"], "http");
-        assert_eq!(
-            config["inbounds"][2]["settings"]["users"][0]["user"],
-            "local"
-        );
-        assert_eq!(
-            config["outbounds"][2]["settings"]["servers"][0]["users"][0]["user"],
-            "upstream"
-        );
+        assert_eq!(config["listeners"].as_array().expect("listeners").len(), 2);
+        assert_eq!(config["proxies"].as_array().expect("proxies").len(), 2);
+        assert_eq!(config["proxy-groups"].as_array().expect("groups").len(), 2);
+
+        assert_eq!(config["listeners"][0]["name"], "listener-socks-rule");
+        assert_eq!(config["listeners"][1]["name"], "listener-http-rule");
+        assert_eq!(config["listeners"][1]["type"], "http");
+
+        assert_eq!(config["proxies"][1]["name"], "Proxy-Http");
+        assert_eq!(config["proxies"][1]["type"], "socks");
+        assert_eq!(config["proxies"][1]["username"], "upstream");
+        assert_eq!(config["proxies"][1]["password"], "secret");
     }
 
     #[test]
-    fn migrates_v1_socks_state_to_v2_union() {
-        let state = serde_json::from_value::<AppState>(json!({
+    fn migrates_legacy_state_to_v3() {
+        let state = crate::models::deserialize_app_state_value(json!({
             "schemaVersion": 1,
             "rules": [{
                 "id": "old-rule",
@@ -391,7 +385,16 @@ mod tests {
         .expect("v1 migration");
 
         assert_eq!(state.schema_version, SCHEMA_VERSION);
-        let OutboundConfig::Socks(outbound) = &state.rules[0].outbound else {
+        assert_eq!(state.rules.len(), 1);
+        assert_eq!(state.groups.len(), 1);
+        assert_eq!(state.proxies.len(), 1);
+
+        assert_eq!(state.proxies[0].name, "Old-Node");
+        assert_eq!(state.groups[0].name, "Old-Group");
+        assert_eq!(state.rules[0].name, "Old");
+        assert_eq!(state.rules[0].inbound_type, "mixed");
+
+        let OutboundConfig::Socks(outbound) = &state.proxies[0].config else {
             panic!("expected migrated SOCKS outbound");
         };
         assert_eq!(outbound.host, "proxy.example");
@@ -399,47 +402,60 @@ mod tests {
 
     #[test]
     fn generates_vless_tls_outbound() {
-        let state = AppState {
-            schema_version: SCHEMA_VERSION,
-            rules: vec![sample_vless_rule("vless-rule", 50001)],
-        };
+        let mut state = sample_state_with_socks("vless-rule", 50001);
+        state.proxies[0].config = OutboundConfig::Vless(VlessOutboundConfig {
+            address: "vless.example".to_string(),
+            port: 443,
+            id: "5783a3e7-e373-51cd-8642-c83782b807c5".to_string(),
+            encryption: "none".to_string(),
+            flow: Some("xtls-rprx-vision".to_string()),
+            level: Some(1),
+            transport: VlessTransportConfig {
+                kind: VlessTransportKind::Tcp,
+                path: None,
+                host: None,
+            },
+            tls: Some(VlessTlsConfig {
+                server_name: Some("vless.example".to_string()),
+                fingerprint: Some("chrome".to_string()),
+                allow_insecure: None,
+            }),
+            reality: None,
+            import_source: None,
+        });
 
         let config = generate_config_value(&state).expect("config generation");
 
-        assert_eq!(config["outbounds"][1]["protocol"], "vless");
-        assert_eq!(
-            config["outbounds"][1]["settings"]["address"],
-            "vless.example"
-        );
-        assert_eq!(config["outbounds"][1]["settings"]["encryption"], "none");
-        assert_eq!(
-            config["outbounds"][1]["settings"]["flow"],
-            "xtls-rprx-vision"
-        );
-        assert_eq!(config["outbounds"][1]["settings"]["level"], 1);
-        assert_eq!(config["outbounds"][1]["streamSettings"]["network"], "tcp");
-        assert_eq!(config["outbounds"][1]["streamSettings"]["security"], "tls");
-        assert_eq!(
-            config["outbounds"][1]["streamSettings"]["tlsSettings"]["serverName"],
-            "vless.example"
-        );
+        assert_eq!(config["proxies"][0]["type"], "vless");
+        assert_eq!(config["proxies"][0]["server"], "vless.example");
+        assert_eq!(config["proxies"][0]["uuid"], "5783a3e7-e373-51cd-8642-c83782b807c5");
+        assert_eq!(config["proxies"][0]["flow"], "xtls-rprx-vision");
+        assert_eq!(config["proxies"][0]["network"], "tcp");
+        assert_eq!(config["proxies"][0]["tls"], true);
+        assert_eq!(config["proxies"][0]["servername"], "vless.example");
+        assert_eq!(config["proxies"][0]["client-fingerprint"], "chrome");
     }
 
     #[test]
     fn generates_shadowsocks_outbound() {
-        let state = AppState {
-            schema_version: SCHEMA_VERSION,
-            rules: vec![sample_shadowsocks_rule("ss-rule", 50001)],
-        };
+        let mut state = sample_state_with_socks("ss-rule", 50001);
+        state.proxies[0].config = OutboundConfig::Shadowsocks(ShadowsocksOutboundConfig {
+            address: "ss.example".to_string(),
+            port: 8388,
+            method: "aes-256-gcm".to_string(),
+            password: "secret".to_string(),
+            uot: true,
+            uot_version: Some(2),
+            import_source: None,
+        });
 
         let config = generate_config_value(&state).expect("config generation");
 
-        assert_eq!(config["outbounds"][1]["protocol"], "shadowsocks");
-        assert_eq!(config["outbounds"][1]["settings"]["address"], "ss.example");
-        assert_eq!(config["outbounds"][1]["settings"]["method"], "aes-256-gcm");
-        assert_eq!(config["outbounds"][1]["settings"]["password"], "secret");
-        assert_eq!(config["outbounds"][1]["settings"]["uot"], true);
-        assert_eq!(config["outbounds"][1]["settings"]["UoTVersion"], 2);
+        assert_eq!(config["proxies"][0]["type"], "ss");
+        assert_eq!(config["proxies"][0]["server"], "ss.example");
+        assert_eq!(config["proxies"][0]["cipher"], "aes-256-gcm");
+        assert_eq!(config["proxies"][0]["password"], "secret");
+        assert_eq!(config["proxies"][0]["udp"], true);
     }
 
     #[test]
@@ -450,30 +466,6 @@ mod tests {
         .expect_err("unsupported plugin");
 
         assert!(error.contains("plugin/obfs"));
-    }
-
-    fn sample_trojan_rule(id: &str, port: u16) -> ProxyRule {
-        let mut rule = sample_rule(id, port);
-        rule.outbound = OutboundConfig::Trojan(TrojanOutboundConfig {
-            address: "trojan.example".to_string(),
-            port: 443,
-            password: "password123".to_string(),
-            email: Some("love@xray.com".to_string()),
-            level: Some(2),
-            transport: TrojanTransportConfig {
-                kind: TrojanTransportKind::Tcp,
-                path: None,
-                host: None,
-            },
-            tls: Some(TrojanTlsConfig {
-                server_name: Some("trojan.example".to_string()),
-                fingerprint: Some("chrome".to_string()),
-                allow_insecure: None,
-            }),
-            reality: None,
-            import_source: None,
-        });
-        rule
     }
 
     #[test]
@@ -531,35 +523,34 @@ mod tests {
 
     #[test]
     fn generates_trojan_tls_outbound() {
-        let state = AppState {
-            schema_version: SCHEMA_VERSION,
-            rules: vec![sample_trojan_rule("trojan-rule", 50001)],
-        };
+        let mut state = sample_state_with_socks("trojan-rule", 50001);
+        state.proxies[0].config = OutboundConfig::Trojan(TrojanOutboundConfig {
+            address: "trojan.example".to_string(),
+            port: 443,
+            password: "password123".to_string(),
+            email: Some("love@xray.com".to_string()),
+            level: Some(2),
+            transport: TrojanTransportConfig {
+                kind: TrojanTransportKind::Tcp,
+                path: None,
+                host: None,
+            },
+            tls: Some(TrojanTlsConfig {
+                server_name: Some("trojan.example".to_string()),
+                fingerprint: Some("chrome".to_string()),
+                allow_insecure: None,
+            }),
+            reality: None,
+            import_source: None,
+        });
 
         let config = generate_config_value(&state).expect("config generation");
 
-        assert_eq!(config["outbounds"][1]["protocol"], "trojan");
-        assert_eq!(
-            config["outbounds"][1]["settings"]["servers"][0]["address"],
-            "trojan.example"
-        );
-        assert_eq!(
-            config["outbounds"][1]["settings"]["servers"][0]["password"],
-            "password123"
-        );
-        assert_eq!(
-            config["outbounds"][1]["settings"]["servers"][0]["email"],
-            "love@xray.com"
-        );
-        assert_eq!(
-            config["outbounds"][1]["settings"]["servers"][0]["level"],
-            2
-        );
-        assert_eq!(config["outbounds"][1]["streamSettings"]["network"], "tcp");
-        assert_eq!(config["outbounds"][1]["streamSettings"]["security"], "tls");
-        assert_eq!(
-            config["outbounds"][1]["streamSettings"]["tlsSettings"]["serverName"],
-            "trojan.example"
-        );
+        assert_eq!(config["proxies"][0]["type"], "trojan");
+        assert_eq!(config["proxies"][0]["server"], "trojan.example");
+        assert_eq!(config["proxies"][0]["password"], "password123");
+        assert_eq!(config["proxies"][0]["network"], "tcp");
+        assert_eq!(config["proxies"][0]["tls"], true);
+        assert_eq!(config["proxies"][0]["servername"], "trojan.example");
     }
 }
