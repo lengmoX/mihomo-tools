@@ -17,6 +17,11 @@ pub const DEFAULT_LISTEN_ADDRESS: &str = "127.0.0.1";
 pub const MIN_AUTO_PORT: u16 = 50_000;
 pub const MAX_AUTO_PORT: u16 = 65_535;
 
+#[cfg(windows)]
+pub const MIHOMO_BINARY_NAME: &str = "mihomo.exe";
+#[cfg(not(windows))]
+pub const MIHOMO_BINARY_NAME: &str = "mihomo";
+
 pub fn runtime_paths() -> CommandResult<RuntimePaths> {
     let runtime_root = resolve_runtime_root()?;
     let data_dir = runtime_root.join("data");
@@ -24,7 +29,7 @@ pub fn runtime_paths() -> CommandResult<RuntimePaths> {
     Ok(RuntimePaths {
         app_state_path: data_dir.join(STATE_FILE_NAME),
         generated_config_path: data_dir.join(GENERATED_CONFIG_FILE_NAME),
-        mihomo_binary_path: runtime_root.join("mihomo").join("mihomo.exe"),
+        mihomo_binary_path: runtime_root.join("mihomo").join(MIHOMO_BINARY_NAME),
         runtime_root,
         data_dir,
     })

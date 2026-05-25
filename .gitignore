@@ -26,10 +26,10 @@ dist-ssr
 .vscode/settings.json
 .vscode/*.code-workspace
 
-# Xray Core
-xray/
+# Mihomo Core (downloaded at build-time, not committed)
+mihomo/
 
 # Portable release packaging outputs
-xray-tools-portable/
+mihomo-tools-portable/
 *.zip
 

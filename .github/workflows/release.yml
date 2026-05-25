@@ -11,7 +11,30 @@ permissions:
 
 jobs:
   build-and-release:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            arch: x64
+            rust-target: x86_64-pc-windows-msvc
+            exe-name: mihomo-tools.exe
+            archive-suffix: windows-x64
+          - os: macos-latest
+            platform: macos
+            arch: arm64
+            rust-target: aarch64-apple-darwin
+            exe-name: mihomo-tools
+            archive-suffix: macos-arm64
+          - os: macos-13
+            platform: macos
+            arch: x64
+            rust-target: x86_64-apple-darwin
+            exe-name: mihomo-tools
+            archive-suffix: macos-x64
+
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout repository
@@ -19,11 +42,10 @@ jobs:
 
       - name: Get version
         id: get_version
-        shell: pwsh
+        shell: bash
         run: |
-          $ver = (Get-Content version.txt).Trim()
-          echo "VERSION=$ver" >> $env:GITHUB_OUTPUT
-
+          ver=$(cat version.txt | tr -d '[:space:]')
+          echo "VERSION=$ver" >> $GITHUB_OUTPUT
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -42,40 +64,88 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-          target: x86_64-pc-windows-msvc
+          target: ${{ matrix.rust-target }}
 
-      - name: Download Xray Core
-        run: pnpm run download-xray
+      - name: Download Mihomo Core
+        run: pnpm run download-mihomo
 
       - name: Build Tauri app
-        run: pnpm tauri build --no-bundle
+        run: pnpm tauri build --no-bundle --target ${{ matrix.rust-target }}
 
-      - name: Prepare portable layout
+      # ─── Windows packaging ───────────────────────────────────────────────────
+      - name: Prepare portable layout (Windows)
+        if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path xray-tools-portable
-          New-Item -ItemType Directory -Force -Path xray-tools-portable/data
-          Copy-Item -Path src-tauri/target/release/xray-tools.exe -Destination xray-tools-portable/xray-tools.exe
-          Copy-Item -Recurse -Path xray -Destination xray-tools-portable/xray
-          # Create zip archive of the directory contents
-          tar -a -c -f "xray-tools-windows-x64-v${{ steps.get_version.outputs.VERSION }}.zip" -C xray-tools-portable .
+          $version = "${{ steps.get_version.outputs.VERSION }}"
+          $outDir = "mihomo-tools-portable"
+          New-Item -ItemType Directory -Force -Path $outDir
+          New-Item -ItemType Directory -Force -Path "$outDir/data"
+          Copy-Item -Path "src-tauri/target/${{ matrix.rust-target }}/release/mihomo-tools.exe" `
+                    -Destination "$outDir/mihomo-tools.exe"
+          Copy-Item -Recurse -Path "mihomo" -Destination "$outDir/mihomo"
+          $archive = "mihomo-tools-${{ matrix.archive-suffix }}-v$version.zip"
+          tar -a -c -f $archive -C $outDir .
+          echo "ARCHIVE_NAME=$archive" >> $env:GITHUB_OUTPUT
 
-      - name: Create Release and Upload Asset
+      # ─── macOS packaging ─────────────────────────────────────────────────────
+      - name: Prepare portable layout (macOS)
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          VERSION="${{ steps.get_version.outputs.VERSION }}"
+          OUT_DIR="mihomo-tools-portable"
+          mkdir -p "$OUT_DIR/data"
+          cp "src-tauri/target/${{ matrix.rust-target }}/release/mihomo-tools" \
+             "$OUT_DIR/mihomo-tools"
+          chmod +x "$OUT_DIR/mihomo-tools"
+          cp -r mihomo "$OUT_DIR/mihomo"
+          ARCHIVE="mihomo-tools-${{ matrix.archive-suffix }}-v${VERSION}.zip"
+          cd "$OUT_DIR"
+          zip -r "../$ARCHIVE" .
+          cd ..
+          echo "ARCHIVE_NAME=$ARCHIVE" >> $GITHUB_OUTPUT
+
+      - name: Set archive name env (Windows)
+        if: matrix.platform == 'windows'
+        id: archive_win
+        shell: pwsh
+        run: |
+          $version = "${{ steps.get_version.outputs.VERSION }}"
+          echo "ARCHIVE_NAME=mihomo-tools-${{ matrix.archive-suffix }}-v$version.zip" >> $env:GITHUB_OUTPUT
+
+      - name: Set archive name env (macOS)
+        if: matrix.platform == 'macos'
+        id: archive_mac
+        shell: bash
+        run: |
+          VERSION="${{ steps.get_version.outputs.VERSION }}"
+          echo "ARCHIVE_NAME=mihomo-tools-${{ matrix.archive-suffix }}-v${VERSION}.zip" >> $GITHUB_OUTPUT
+
+      - name: Upload Release Asset
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.get_version.outputs.VERSION }}
-          files: xray-tools-windows-x64-v${{ steps.get_version.outputs.VERSION }}.zip
+          files: mihomo-tools-${{ matrix.archive-suffix }}-v${{ steps.get_version.outputs.VERSION }}.zip
           name: Release v${{ steps.get_version.outputs.VERSION }}
           body: |
-            Portable release of xray-tools for Windows x64.
-            
-            This package includes:
-            - `xray-tools.exe` (main GUI controller)
-            - `xray/` (pre-configured folder containing the latest official Xray Core)
-            - `data/` (pre-created folder for local configurations)
-            
-            ### Installation:
-            Extract the zip file to any directory and run `xray-tools.exe`.
+            Portable release of **mihomo-tools** – a local Mihomo (Clash.Meta) proxy lifecycle manager.
+
+            ## Downloads
+
+            | Platform | Archive |
+            |----------|---------|
+            | Windows x64 | `mihomo-tools-windows-x64-v${{ steps.get_version.outputs.VERSION }}.zip` |
+            | macOS Apple Silicon (arm64) | `mihomo-tools-macos-arm64-v${{ steps.get_version.outputs.VERSION }}.zip` |
+            | macOS Intel (x64) | `mihomo-tools-macos-x64-v${{ steps.get_version.outputs.VERSION }}.zip` |
+
+            ## Installation
+
+            1. Download the archive for your platform.
+            2. Extract to any directory.
+            3. Run `mihomo-tools.exe` (Windows) or `./mihomo-tools` (macOS).
+
+            > The Mihomo core binary is bundled inside the `mihomo/` folder.
           draft: false
           prerelease: false
         env:

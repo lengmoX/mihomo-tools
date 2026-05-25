@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "download-xray": "node scripts/download-xray.js",
+    "download-mihomo": "node scripts/download-mihomo.js",
     "release": "node scripts/release.js"
   },
   "dependencies": {
