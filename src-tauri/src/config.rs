@@ -272,6 +272,38 @@ fn generate_mihomo_proxy_val(name: &str, config: &OutboundConfig) -> CommandResu
                 val.insert("reality-opts".to_string(), Value::Object(reality_opts));
             }
         }
+        OutboundConfig::Hysteria2(cfg) => {
+            val.insert("type".to_string(), json!("hysteria2"));
+            val.insert("server".to_string(), json!(cfg.server));
+            val.insert("port".to_string(), json!(cfg.port));
+            if let Some(password) = &cfg.password {
+                val.insert("password".to_string(), json!(password));
+            }
+            if let Some(auth_str) = &cfg.auth_str {
+                val.insert("auth-str".to_string(), json!(auth_str));
+            }
+            if let Some(sni) = &cfg.sni {
+                val.insert("sni".to_string(), json!(sni));
+            }
+            if let Some(skip_cert_verify) = cfg.skip_cert_verify {
+                val.insert("skip-cert-verify".to_string(), json!(skip_cert_verify));
+            }
+            if let Some(tfo) = cfg.tfo {
+                val.insert("tfo".to_string(), json!(tfo));
+            }
+            if let Some(up) = &cfg.up {
+                val.insert("up".to_string(), json!(up));
+            }
+            if let Some(down) = &cfg.down {
+                val.insert("down".to_string(), json!(down));
+            }
+            if let Some(obfs) = &cfg.obfs {
+                let mut obfs_map = serde_json::Map::new();
+                obfs_map.insert("type".to_string(), json!(obfs.r#type));
+                obfs_map.insert("password".to_string(), json!(obfs.password));
+                val.insert("obfs".to_string(), Value::Object(obfs_map));
+            }
+        }
     }
 
     Ok(Value::Object(val))

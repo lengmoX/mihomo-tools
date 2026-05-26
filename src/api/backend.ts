@@ -1,13 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type OutboundProtocol = "socks" | "vless" | "shadowsocks" | "trojan" | "anytls";
+export type OutboundProtocol = "socks" | "vless" | "shadowsocks" | "trojan" | "anytls" | "hysteria2";
 
 export interface AuthConfig {
   username: string;
   password: string;
 }
 
-export type OutboundConfig = SocksOutboundConfig | VlessOutboundConfig | ShadowsocksOutboundConfig | TrojanOutboundConfig | AnytlsOutboundConfig;
+export type OutboundConfig = SocksOutboundConfig | VlessOutboundConfig | ShadowsocksOutboundConfig | TrojanOutboundConfig | AnytlsOutboundConfig | Hysteria2OutboundConfig;
 
 export interface SocksOutboundConfig {
   protocol: "socks";
@@ -118,6 +118,26 @@ export interface AnytlsOutboundConfig {
   sni: string | null;
   alpn: string[] | null;
   skipCertVerify: boolean | null;
+  importSource: ImportSource | null;
+}
+
+export interface Hysteria2ObfsConfig {
+  type: string;
+  password: string;
+}
+
+export interface Hysteria2OutboundConfig {
+  protocol: "hysteria2";
+  server: string;
+  port: number;
+  password: string | null;
+  authStr: string | null;
+  sni: string | null;
+  skipCertVerify: boolean | null;
+  tfo: boolean | null;
+  up: string | null;
+  down: string | null;
+  obfs: Hysteria2ObfsConfig | null;
   importSource: ImportSource | null;
 }
 

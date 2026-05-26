@@ -67,6 +67,17 @@ type RuleFormState = {
   anytlsAlpn: string;
   anytlsSkipCertVerify: boolean;
 
+  // Hysteria2 configurations
+  hysteria2Password: string;
+  hysteria2AuthStr: string;
+  hysteria2Sni: string;
+  hysteria2SkipCertVerify: boolean;
+  hysteria2Tfo: boolean;
+  hysteria2Up: string;
+  hysteria2Down: string;
+  hysteria2ObfsType: string;
+  hysteria2ObfsPassword: string;
+
   importedOutbound: OutboundConfig | null;
 };
 
@@ -123,7 +134,7 @@ const inboundTypeOptions = [
   { value: "http", label: "HTTP" },
 ];
 
-const outboundProtocolOptions: OutboundProtocol[] = ["socks", "vless", "shadowsocks", "trojan", "anytls"];
+const outboundProtocolOptions: OutboundProtocol[] = ["socks", "vless", "shadowsocks", "trojan", "anytls", "hysteria2"];
 const vlessFlowOptions: VlessFlow[] = ["xtls-rprx-vision", "xtls-rprx-vision-udp443"];
 const minAutoInboundPort = 50_000;
 const maxAutoInboundPort = 65_535;
@@ -199,11 +210,18 @@ function formatOutboundProtocol(protocol: OutboundProtocol) {
   if (protocol === "vless") return "VLESS";
   if (protocol === "trojan") return "Trojan";
   if (protocol === "anytls") return "AnyTLS";
+  if (protocol === "hysteria2") return "Hysteria2";
   return "Shadowsocks";
 }
 
 function getOutboundAddress(outbound: OutboundConfig) {
-  return outbound.protocol === "socks" ? `${outbound.host}:${outbound.port}` : `${outbound.address}:${outbound.port}`;
+  if (outbound.protocol === "socks") {
+    return `${outbound.host}:${outbound.port}`;
+  }
+  if (outbound.protocol === "hysteria2") {
+    return `${outbound.server}:${outbound.port}`;
+  }
+  return `${outbound.address}:${outbound.port}`;
 }
 
 function formatCountryFlag(country: string | null) {
@@ -218,7 +236,7 @@ function formatCountryFlag(country: string | null) {
 }
 
 function toOutboundFormState(outbound: OutboundConfig) {
-  const address = outbound.protocol === "socks" ? outbound.host : outbound.address;
+  const address = outbound.protocol === "socks" ? outbound.host : outbound.protocol === "hysteria2" ? outbound.server : outbound.address;
   const socksAuth = outbound.protocol === "socks" ? outbound.auth : null;
   const vlessSecurity = (outbound.protocol === "vless" && outbound.reality !== null ? "reality" : outbound.protocol === "vless" && outbound.tls !== null ? "tls" : "none") as "none" | "tls" | "reality";
   const trojanSecurity = (outbound.protocol === "trojan" && outbound.reality !== null ? "reality" : outbound.protocol === "trojan" && outbound.tls !== null ? "tls" : "none") as "none" | "tls" | "reality";
@@ -272,6 +290,17 @@ function toOutboundFormState(outbound: OutboundConfig) {
     anytlsSni: outbound.protocol === "anytls" ? outbound.sni ?? "" : "",
     anytlsAlpn: outbound.protocol === "anytls" ? (outbound.alpn ?? []).join(",") : "",
     anytlsSkipCertVerify: outbound.protocol === "anytls" ? !!outbound.skipCertVerify : false,
+
+    // Hysteria2 mapping
+    hysteria2Password: outbound.protocol === "hysteria2" ? outbound.password ?? "" : "",
+    hysteria2AuthStr: outbound.protocol === "hysteria2" ? outbound.authStr ?? "" : "",
+    hysteria2Sni: outbound.protocol === "hysteria2" ? outbound.sni ?? "" : "",
+    hysteria2SkipCertVerify: outbound.protocol === "hysteria2" ? !!outbound.skipCertVerify : false,
+    hysteria2Tfo: outbound.protocol === "hysteria2" ? !!outbound.tfo : false,
+    hysteria2Up: outbound.protocol === "hysteria2" ? outbound.up ?? "" : "",
+    hysteria2Down: outbound.protocol === "hysteria2" ? outbound.down ?? "" : "",
+    hysteria2ObfsType: outbound.protocol === "hysteria2" ? outbound.obfs?.type ?? "" : "",
+    hysteria2ObfsPassword: outbound.protocol === "hysteria2" ? outbound.obfs?.password ?? "" : "",
 
     importedOutbound: outbound.protocol === "socks" ? null : outbound,
   };
@@ -427,6 +456,28 @@ function buildOutboundFromDraft(draft: RuleFormState): OutboundConfig | null {
     };
   }
 
+  if (draft.outboundProtocol === "hysteria2") {
+    const obfs = draft.hysteria2ObfsType.trim() !== "" && draft.hysteria2ObfsPassword.trim() !== "" ? {
+      type: draft.hysteria2ObfsType.trim(),
+      password: draft.hysteria2ObfsPassword.trim(),
+    } : null;
+
+    return {
+      protocol: "hysteria2",
+      server: draft.address.trim(),
+      port,
+      password: draft.hysteria2Password.trim() === "" ? null : draft.hysteria2Password.trim(),
+      authStr: draft.hysteria2AuthStr.trim() === "" ? null : draft.hysteria2AuthStr.trim(),
+      sni: draft.hysteria2Sni.trim() === "" ? null : draft.hysteria2Sni.trim(),
+      skipCertVerify: draft.hysteria2SkipCertVerify,
+      tfo: draft.hysteria2Tfo,
+      up: draft.hysteria2Up.trim() === "" ? null : draft.hysteria2Up.trim(),
+      down: draft.hysteria2Down.trim() === "" ? null : draft.hysteria2Down.trim(),
+      obfs,
+      importSource: draft.importedOutbound?.protocol === "hysteria2" ? draft.importedOutbound.importSource : null,
+    };
+  }
+
   return {
     protocol: "socks",
     host: draft.address.trim(),
@@ -439,7 +490,7 @@ function applyOutboundToDraft(draft: RuleFormState, outbound: OutboundConfig): R
   const nextDraft: RuleFormState = {
     ...draft,
     outboundProtocol: outbound.protocol,
-    address: outbound.protocol === "socks" ? outbound.host : outbound.address,
+    address: outbound.protocol === "socks" ? outbound.host : outbound.protocol === "hysteria2" ? outbound.server : outbound.address,
     port: String(outbound.port),
     importedOutbound: outbound.protocol === "socks" ? null : outbound,
   };
@@ -505,6 +556,21 @@ function applyOutboundToDraft(draft: RuleFormState, outbound: OutboundConfig): R
       anytlsSni: outbound.sni ?? "",
       anytlsAlpn: (outbound.alpn ?? []).join(","),
       anytlsSkipCertVerify: !!outbound.skipCertVerify,
+    };
+  }
+
+  if (outbound.protocol === "hysteria2") {
+    return {
+      ...nextDraft,
+      hysteria2Password: outbound.password ?? "",
+      hysteria2AuthStr: outbound.authStr ?? "",
+      hysteria2Sni: outbound.sni ?? "",
+      hysteria2SkipCertVerify: !!outbound.skipCertVerify,
+      hysteria2Tfo: !!outbound.tfo,
+      hysteria2Up: outbound.up ?? "",
+      hysteria2Down: outbound.down ?? "",
+      hysteria2ObfsType: outbound.obfs?.type ?? "",
+      hysteria2ObfsPassword: outbound.obfs?.password ?? "",
     };
   }
 
@@ -774,7 +840,7 @@ function App() {
     const query = searchQuery.trim().toLowerCase();
     if (!query) return appState.rules;
     return appState.rules.filter((rule) => {
-      const outboundAddress = rule.outbound.protocol === "socks" ? rule.outbound.host : rule.outbound.address;
+      const outboundAddress = rule.outbound.protocol === "socks" ? rule.outbound.host : rule.outbound.protocol === "hysteria2" ? rule.outbound.server : rule.outbound.address;
       return rule.remark.toLowerCase().includes(query) ||
         String(rule.inbound.port).includes(query) ||
         outboundAddress.toLowerCase().includes(query) ||
@@ -1053,6 +1119,17 @@ function App() {
         anytlsSni: "",
         anytlsAlpn: "",
         anytlsSkipCertVerify: false,
+
+        // Hysteria2 defaults
+        hysteria2Password: "",
+        hysteria2AuthStr: "",
+        hysteria2Sni: "",
+        hysteria2SkipCertVerify: false,
+        hysteria2Tfo: false,
+        hysteria2Up: "",
+        hysteria2Down: "",
+        hysteria2ObfsType: "",
+        hysteria2ObfsPassword: "",
 
         importedOutbound: null,
       }
@@ -2111,6 +2188,90 @@ function App() {
                         </label>
                       </>
                     )}
+
+                    {/* Hysteria2 specific */}
+                    {ruleModal.draft.outboundProtocol === "hysteria2" && (
+                      <>
+                        <label className="field">
+                          <span>连接密码</span>
+                          <input
+                            type="password"
+                            value={ruleModal.draft.hysteria2Password}
+                            onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, hysteria2Password: e.currentTarget.value } })}
+                            placeholder="可选"
+                          />
+                        </label>
+                        <label className="field">
+                          <span>Auth String</span>
+                          <input
+                            type="text"
+                            value={ruleModal.draft.hysteria2AuthStr}
+                            onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, hysteria2AuthStr: e.currentTarget.value } })}
+                            placeholder="可选 (如密码为空使用)"
+                          />
+                        </label>
+                        <label className="field">
+                          <span>ServerName (SNI)</span>
+                          <input
+                            type="text"
+                            value={ruleModal.draft.hysteria2Sni}
+                            onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, hysteria2Sni: e.currentTarget.value } })}
+                            placeholder="domain.com"
+                          />
+                        </label>
+                        <label className="field">
+                          <span>上传速度</span>
+                          <input
+                            type="text"
+                            value={ruleModal.draft.hysteria2Up}
+                            onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, hysteria2Up: e.currentTarget.value } })}
+                            placeholder="例如：50 Mbps"
+                          />
+                        </label>
+                        <label className="field">
+                          <span>下载速度</span>
+                          <input
+                            type="text"
+                            value={ruleModal.draft.hysteria2Down}
+                            onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, hysteria2Down: e.currentTarget.value } })}
+                            placeholder="例如：100 Mbps"
+                          />
+                        </label>
+                        <label className="field">
+                          <span>混淆类型 (obfs type)</span>
+                          <input
+                            type="text"
+                            value={ruleModal.draft.hysteria2ObfsType}
+                            onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, hysteria2ObfsType: e.currentTarget.value } })}
+                            placeholder="可选，如 salamander"
+                          />
+                        </label>
+                        <label className="field">
+                          <span>混淆密码 (obfs password)</span>
+                          <input
+                            type="password"
+                            value={ruleModal.draft.hysteria2ObfsPassword}
+                            onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, hysteria2ObfsPassword: e.currentTarget.value } })}
+                          />
+                        </label>
+                        <label className="toggle-field wide-field">
+                          <input
+                            type="checkbox"
+                            checked={ruleModal.draft.hysteria2Tfo}
+                            onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, hysteria2Tfo: e.currentTarget.checked } })}
+                          />
+                          <span>启用 TCP Fast Open (tfo)</span>
+                        </label>
+                        <label className="toggle-field wide-field">
+                          <input
+                            type="checkbox"
+                            checked={ruleModal.draft.hysteria2SkipCertVerify}
+                            onChange={(e) => setRuleModal({ ...ruleModal, draft: { ...ruleModal.draft, hysteria2SkipCertVerify: e.currentTarget.checked } })}
+                          />
+                          <span>忽略证书校验错误 (skip-cert-verify)</span>
+                        </label>
+                      </>
+                    )}
                   </div>
                 </section>
               </div>
@@ -2165,12 +2326,12 @@ function App() {
                       />
                     </label>
                     <label className="field wide-field">
-                      <span>出口链接 (每行一个，支持 ss, vless, trojan, socks)</span>
+                      <span>出口链接 (每行一个，支持 ss, vless, trojan, socks, hy2, 或 Clash YAML 配置)</span>
                       <textarea
                         rows={8}
                         value={batchAddText}
                         onChange={(e) => setBatchAddText(e.currentTarget.value)}
-                        placeholder="socks5://host:port&#10;ss://...#备注&#10;vless://..."
+                        placeholder="socks5://host:port&#10;ss://...#备注&#10;hy2://password@host:port&#10;- {type: hysteria2, server: host, port: port, password: pwd}"
                         required
                       />
                     </label>

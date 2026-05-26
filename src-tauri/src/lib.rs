@@ -11,6 +11,7 @@ pub use models::{
     ShadowsocksOutboundConfig, SocksOutboundConfig, VlessOutboundConfig,
     VlessRealityConfig, VlessTlsConfig, VlessTransportConfig, VlessTransportKind,
     TrojanOutboundConfig, TrojanTlsConfig, TrojanRealityConfig, TrojanTransportConfig, TrojanTransportKind,
+    Hysteria2OutboundConfig, Hysteria2ObfsConfig,
     ProxyRule, InboundConfig, InboundProtocol, SCHEMA_VERSION,
 };
 pub use parser::{parse_socks_url, parse_outbound_url_value};
@@ -567,5 +568,96 @@ mod tests {
         assert_eq!(o6.host, "198.51.100.2");
         assert_eq!(o6.port, 1080);
         assert_eq!(o6.auth, Some(AuthConfig { username: "eve".to_string(), password: "secretxyz".to_string() }));
+    }
+
+    #[test]
+    fn parses_hysteria2_url() {
+        let result = parse_outbound_url_value("hy2://mypassword123@hysteria2-server.com:31003?sni=www.bing.com&skip-cert-verify=true&tfo=true&up=50m&down=100m&obfs=salamander&obfs-password=obfspwd#🇸🇬%20Hysteria2")
+            .expect("valid hysteria2 URL");
+
+        assert_eq!(result.display_name, Some("🇸🇬 Hysteria2".to_string()));
+        let OutboundConfig::Hysteria2(outbound) = result.outbound else {
+            panic!("expected Hysteria2 outbound");
+        };
+        assert_eq!(outbound.server, "hysteria2-server.com");
+        assert_eq!(outbound.port, 31003);
+        assert_eq!(outbound.password, Some("mypassword123".to_string()));
+        assert_eq!(outbound.sni, Some("www.bing.com".to_string()));
+        assert_eq!(outbound.skip_cert_verify, Some(true));
+        assert_eq!(outbound.tfo, Some(true));
+        assert_eq!(outbound.up, Some("50m".to_string()));
+        assert_eq!(outbound.down, Some("100m".to_string()));
+        let obfs = outbound.obfs.expect("obfs");
+        assert_eq!(obfs.r#type, "salamander");
+        assert_eq!(obfs.password, "obfspwd");
+    }
+
+    #[test]
+    fn parses_clash_yaml_hysteria2() {
+        let yaml = r#"
+  - name: "🇸🇬 新加坡直连2-高速流媒体"
+    type: hysteria2
+    server: zlhy2.tn21axs2n.cn
+    port: 31003
+    password: "163xsad0d-fed6-4a77-9e9d-3336f9364304"
+    sni: www.bing.com
+    skip-cert-verify: true
+    tfo: false
+    up: "50 mbps"
+    down: "100 mbps"
+    obfs:
+      type: salamander
+      password: obfspassword
+"#;
+        let result = parse_outbound_url_value(yaml).expect("valid clash YAML");
+        assert_eq!(result.display_name, Some("🇸🇬 新加坡直连2-高速流媒体".to_string()));
+        let OutboundConfig::Hysteria2(outbound) = result.outbound else {
+            panic!("expected Hysteria2 outbound");
+        };
+        assert_eq!(outbound.server, "zlhy2.tn21axs2n.cn");
+        assert_eq!(outbound.port, 31003);
+        assert_eq!(outbound.password, Some("163xsad0d-fed6-4a77-9e9d-3336f9364304".to_string()));
+        assert_eq!(outbound.sni, Some("www.bing.com".to_string()));
+        assert_eq!(outbound.skip_cert_verify, Some(true));
+        assert_eq!(outbound.tfo, Some(false));
+        assert_eq!(outbound.up, Some("50 mbps".to_string()));
+        assert_eq!(outbound.down, Some("100 mbps".to_string()));
+        let obfs = outbound.obfs.expect("obfs");
+        assert_eq!(obfs.r#type, "salamander");
+        assert_eq!(obfs.password, "obfspassword");
+    }
+
+    #[test]
+    fn generates_hysteria2_config() {
+        let mut state = sample_state_with_socks("hy2-rule", 50001);
+        state.rules[0].outbound = OutboundConfig::Hysteria2(Hysteria2OutboundConfig {
+            server: "hy2.example.com".to_string(),
+            port: 31003,
+            password: Some("mypass123".to_string()),
+            auth_str: None,
+            sni: Some("www.bing.com".to_string()),
+            skip_cert_verify: Some(true),
+            tfo: Some(true),
+            up: Some("50m".to_string()),
+            down: Some("100m".to_string()),
+            obfs: Some(Hysteria2ObfsConfig {
+                r#type: "salamander".to_string(),
+                password: "obfspassword".to_string(),
+            }),
+            import_source: None,
+        });
+
+        let config = generate_config_value(&state).expect("config generation");
+        assert_eq!(config["proxies"][0]["type"], "hysteria2");
+        assert_eq!(config["proxies"][0]["server"], "hy2.example.com");
+        assert_eq!(config["proxies"][0]["port"], 31003);
+        assert_eq!(config["proxies"][0]["password"], "mypass123");
+        assert_eq!(config["proxies"][0]["sni"], "www.bing.com");
+        assert_eq!(config["proxies"][0]["skip-cert-verify"], true);
+        assert_eq!(config["proxies"][0]["tfo"], true);
+        assert_eq!(config["proxies"][0]["up"], "50m");
+        assert_eq!(config["proxies"][0]["down"], "100m");
+        assert_eq!(config["proxies"][0]["obfs"]["type"], "salamander");
+        assert_eq!(config["proxies"][0]["obfs"]["password"], "obfspassword");
     }
 }

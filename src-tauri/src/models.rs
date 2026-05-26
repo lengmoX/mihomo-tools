@@ -352,6 +352,39 @@ pub enum OutboundConfig {
     Shadowsocks(ShadowsocksOutboundConfig),
     Trojan(TrojanOutboundConfig),
     Anytls(AnytlsOutboundConfig),
+    Hysteria2(Hysteria2OutboundConfig),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Hysteria2OutboundConfig {
+    pub server: String,
+    pub port: u16,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub auth_str: Option<String>,
+    #[serde(default)]
+    pub sni: Option<String>,
+    #[serde(default)]
+    pub skip_cert_verify: Option<bool>,
+    #[serde(default)]
+    pub tfo: Option<bool>,
+    #[serde(default)]
+    pub up: Option<String>,
+    #[serde(default)]
+    pub down: Option<String>,
+    #[serde(default)]
+    pub obfs: Option<Hysteria2ObfsConfig>,
+    #[serde(default)]
+    pub import_source: Option<ImportSource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Hysteria2ObfsConfig {
+    pub r#type: String,
+    pub password: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -624,6 +657,20 @@ pub fn validate_outbound_config(proxy_id: &str, outbound: &OutboundConfig) -> Co
         OutboundConfig::Shadowsocks(config) => validate_shadowsocks_outbound(proxy_id, config)?,
         OutboundConfig::Trojan(config) => validate_trojan_outbound(proxy_id, config)?,
         OutboundConfig::Anytls(config) => validate_anytls_outbound(proxy_id, config)?,
+        OutboundConfig::Hysteria2(config) => validate_hysteria2_outbound(proxy_id, config)?,
+    }
+    Ok(())
+}
+
+pub fn validate_hysteria2_outbound(proxy_id: &str, config: &Hysteria2OutboundConfig) -> CommandResult<()> {
+    if config.server.trim().is_empty() {
+        return Err(format!("Proxy '{proxy_id}' has an empty Hysteria2 server address"));
+    }
+    if config.port == 0 {
+        return Err(format!("Proxy '{proxy_id}' has an invalid port"));
+    }
+    if config.password.is_none() && config.auth_str.is_none() {
+        return Err(format!("Proxy '{proxy_id}' requires a password or auth_str"));
     }
     Ok(())
 }
