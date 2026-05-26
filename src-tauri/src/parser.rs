@@ -11,6 +11,13 @@ use crate::utils::{
 };
 
 pub fn parse_outbound_url_value(input: &str) -> CommandResult<ParseOutboundUrlResult> {
+    let trimmed = input.trim();
+    if !trimmed.contains("://") || trimmed.starts_with("socks://") || trimmed.starts_with("socks5://") {
+        if let Some(res) = try_parse_raw_socks(trimmed) {
+            return Ok(res);
+        }
+    }
+
     let normalized = normalize_proxy_url(input);
     let (scheme, _) = normalized
         .split_once("://")
@@ -611,4 +618,156 @@ pub fn parse_anytls_url(input: &str) -> CommandResult<ParseOutboundUrlResult> {
         display_name: parse_fragment(url.fragment())?,
         warnings,
     })
+}
+
+pub fn try_parse_raw_socks(input: &str) -> Option<ParseOutboundUrlResult> {
+    let mut cleaned = input.trim();
+    if let Some(rest) = cleaned.strip_prefix("socks5://") {
+        cleaned = rest.trim();
+    } else if let Some(rest) = cleaned.strip_prefix("socks://") {
+        cleaned = rest.trim();
+    }
+
+    // Support formats:
+    // 1. username:password@hostname:port
+    // 2. hostname:port@username:password
+    // 3. hostname:port:username:password
+    // 4. username:password:hostname:port
+    // 5. hostname:port
+
+    if cleaned.contains('@') {
+        let parts: Vec<&str> = cleaned.split('@').collect();
+        if parts.len() == 2 {
+            let p0 = parts[0].trim();
+            let p1 = parts[1].trim();
+
+            if let Some((host, port_str)) = p1.rsplit_once(':') {
+                if let Ok(port) = port_str.trim().parse::<u16>() {
+                    let (user, pass) = if let Some((u, p)) = p0.split_once(':') {
+                        (u.to_string(), p.to_string())
+                    } else {
+                        (p0.to_string(), "".to_string())
+                    };
+                    return Some(ParseOutboundUrlResult {
+                        outbound: OutboundConfig::Socks(SocksOutboundConfig {
+                            host: host.trim().to_string(),
+                            port,
+                            auth: if user.is_empty() && pass.is_empty() {
+                                None
+                            } else {
+                                Some(AuthConfig { username: user, password: pass })
+                            },
+                        }),
+                        display_name: None,
+                        warnings: Vec::new(),
+                    });
+                }
+            }
+
+            if let Some((host, port_str)) = p0.rsplit_once(':') {
+                if let Ok(port) = port_str.trim().parse::<u16>() {
+                    let (user, pass) = if let Some((u, p)) = p1.split_once(':') {
+                        (u.to_string(), p.to_string())
+                    } else {
+                        (p1.to_string(), "".to_string())
+                    };
+                    return Some(ParseOutboundUrlResult {
+                        outbound: OutboundConfig::Socks(SocksOutboundConfig {
+                            host: host.trim().to_string(),
+                            port,
+                            auth: if user.is_empty() && pass.is_empty() {
+                                None
+                            } else {
+                                Some(AuthConfig { username: user, password: pass })
+                            },
+                        }),
+                        display_name: None,
+                        warnings: Vec::new(),
+                    });
+                }
+            }
+        }
+    }
+
+    let parts: Vec<&str> = cleaned.split(':').map(|s| s.trim()).collect();
+    if parts.len() == 4 {
+        let port_1_opt = parts[1].parse::<u16>().ok();
+        let port_3_opt = parts[3].parse::<u16>().ok();
+
+        match (port_1_opt, port_3_opt) {
+            (Some(port1), Some(port3)) => {
+                let host_in_0 = parts[0].contains('.') || parts[0] == "localhost" || !parts[2].contains('.');
+                if host_in_0 {
+                    return Some(ParseOutboundUrlResult {
+                        outbound: OutboundConfig::Socks(SocksOutboundConfig {
+                            host: parts[0].to_string(),
+                            port: port1,
+                            auth: Some(AuthConfig {
+                                username: parts[2].to_string(),
+                                password: parts[3].to_string(),
+                            }),
+                        }),
+                        display_name: None,
+                        warnings: Vec::new(),
+                    });
+                } else {
+                    return Some(ParseOutboundUrlResult {
+                        outbound: OutboundConfig::Socks(SocksOutboundConfig {
+                            host: parts[2].to_string(),
+                            port: port3,
+                            auth: Some(AuthConfig {
+                                username: parts[0].to_string(),
+                                password: parts[1].to_string(),
+                            }),
+                        }),
+                        display_name: None,
+                        warnings: Vec::new(),
+                    });
+                }
+            }
+            (Some(port1), None) => {
+                return Some(ParseOutboundUrlResult {
+                    outbound: OutboundConfig::Socks(SocksOutboundConfig {
+                        host: parts[0].to_string(),
+                        port: port1,
+                        auth: Some(AuthConfig {
+                            username: parts[2].to_string(),
+                            password: parts[3].to_string(),
+                        }),
+                    }),
+                    display_name: None,
+                    warnings: Vec::new(),
+                });
+            }
+            (None, Some(port3)) => {
+                return Some(ParseOutboundUrlResult {
+                    outbound: OutboundConfig::Socks(SocksOutboundConfig {
+                        host: parts[2].to_string(),
+                        port: port3,
+                        auth: Some(AuthConfig {
+                            username: parts[0].to_string(),
+                            password: parts[1].to_string(),
+                        }),
+                    }),
+                    display_name: None,
+                    warnings: Vec::new(),
+                });
+            }
+            (None, None) => {}
+        }
+    } else if parts.len() == 2 {
+        if let Ok(port) = parts[1].parse::<u16>() {
+            return Some(ParseOutboundUrlResult {
+                outbound: OutboundConfig::Socks(SocksOutboundConfig {
+                    host: parts[0].to_string(),
+                    port,
+                    auth: None,
+                }),
+                display_name: None,
+                warnings: Vec::new(),
+            });
+        }
+    }
+
+    None
 }

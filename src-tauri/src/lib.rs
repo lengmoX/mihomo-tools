@@ -523,4 +523,49 @@ mod tests {
         assert_eq!(config["proxies"][0]["tls"], true);
         assert_eq!(config["proxies"][0]["servername"], "trojan.example");
     }
+
+    #[test]
+    fn parses_raw_socks_formats() {
+        // hostname:port:username:password
+        let r1 = parse_outbound_url_value("198.51.100.1:1080:alice:secret123").unwrap();
+        let OutboundConfig::Socks(o1) = r1.outbound else { panic!("expected SOCKS") };
+        assert_eq!(o1.host, "198.51.100.1");
+        assert_eq!(o1.port, 1080);
+        assert_eq!(o1.auth, Some(AuthConfig { username: "alice".to_string(), password: "secret123".to_string() }));
+
+        // username:password:hostname:port
+        let r2 = parse_outbound_url_value("bob:password456:my.socks.proxy:1081").unwrap();
+        let OutboundConfig::Socks(o2) = r2.outbound else { panic!("expected SOCKS") };
+        assert_eq!(o2.host, "my.socks.proxy");
+        assert_eq!(o2.port, 1081);
+        assert_eq!(o2.auth, Some(AuthConfig { username: "bob".to_string(), password: "password456".to_string() }));
+
+        // username:password@hostname:port
+        let r3 = parse_outbound_url_value("charlie:secret789@socks.host.com:1082").unwrap();
+        let OutboundConfig::Socks(o3) = r3.outbound else { panic!("expected SOCKS") };
+        assert_eq!(o3.host, "socks.host.com");
+        assert_eq!(o3.port, 1082);
+        assert_eq!(o3.auth, Some(AuthConfig { username: "charlie".to_string(), password: "secret789".to_string() }));
+
+        // hostname:port@username:password
+        let r4 = parse_outbound_url_value("socks.host.com:1083@dave:secretabc").unwrap();
+        let OutboundConfig::Socks(o4) = r4.outbound else { panic!("expected SOCKS") };
+        assert_eq!(o4.host, "socks.host.com");
+        assert_eq!(o4.port, 1083);
+        assert_eq!(o4.auth, Some(AuthConfig { username: "dave".to_string(), password: "secretabc".to_string() }));
+
+        // hostname:port
+        let r5 = parse_outbound_url_value("127.0.0.1:1084").unwrap();
+        let OutboundConfig::Socks(o5) = r5.outbound else { panic!("expected SOCKS") };
+        assert_eq!(o5.host, "127.0.0.1");
+        assert_eq!(o5.port, 1084);
+        assert_eq!(o5.auth, None);
+
+        // socks5:// hostname:port:username:password
+        let r6 = parse_outbound_url_value("socks5://198.51.100.2:1080:eve:secretxyz").unwrap();
+        let OutboundConfig::Socks(o6) = r6.outbound else { panic!("expected SOCKS") };
+        assert_eq!(o6.host, "198.51.100.2");
+        assert_eq!(o6.port, 1080);
+        assert_eq!(o6.auth, Some(AuthConfig { username: "eve".to_string(), password: "secretxyz".to_string() }));
+    }
 }
