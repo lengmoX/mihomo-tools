@@ -747,6 +747,11 @@ function App() {
   // Modals state
   const [ruleModal, setRuleModal] = useState<RuleModalState | null>(null);
   const [infoModalRule, setInfoModalRule] = useState<ProxyRule | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<{
+    type: "single" | "batch";
+    ruleId?: string;
+    remark?: string;
+  } | null>(null);
 
   // Batch import state
   const [batchAddOpen, setBatchAddOpen] = useState(false);
@@ -1537,7 +1542,12 @@ function App() {
               <button className="ghost-button" onClick={() => void checkSelectedRulesIp()} disabled={selectedRuleIds.length === 0 || isBusy} title="批量测速">
                 <Icon name="scan" />
               </button>
-              <button className="danger-button" onClick={handleDeleteSelectedRules} disabled={selectedRuleIds.length === 0 || isBusy}>
+              <button
+                className="danger-button"
+                onClick={() => setConfirmDelete({ type: "batch" })}
+                disabled={selectedRuleIds.length === 0 || isBusy}
+                title="批量删除"
+              >
                 <Icon name="delete" />
               </button>
             </div>
@@ -1635,7 +1645,12 @@ function App() {
                           <button className="small-icon-button" onClick={() => openEditRuleModal(rule)} disabled={isBusy} title="编辑">
                             <Icon name="edit" />
                           </button>
-                          <button className="small-icon-button danger" onClick={() => void handleDeleteRule(rule.id)} disabled={isBusy} title="删除">
+                          <button
+                            className="small-icon-button danger"
+                            onClick={() => setConfirmDelete({ type: "single", ruleId: rule.id, remark: rule.remark })}
+                            disabled={isBusy}
+                            title="删除"
+                          >
                             <Icon name="delete" />
                           </button>
                         </div>
@@ -2478,6 +2493,49 @@ function App() {
         </div>
       )}
 
+      {confirmDelete && (
+        <div className="modal-layer confirmation-layer" onClick={() => setConfirmDelete(null)}>
+          <div className="confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="confirm-header">
+              <h2>确认删除</h2>
+              <button className="small-icon-button" type="button" onClick={() => setConfirmDelete(null)} aria-label="关闭">
+                <Icon name="close" />
+              </button>
+            </div>
+            <div className="confirm-body">
+              {confirmDelete.type === "single" ? (
+                <p>
+                  确定要删除规则 <strong>{confirmDelete.remark}</strong> 吗？此操作无法撤销。
+                </p>
+              ) : (
+                <p>
+                  确定要批量删除选中的 <strong>{selectedRuleIds.length}</strong> 条规则吗？此操作无法撤销。
+                </p>
+              )}
+            </div>
+            <div className="confirm-footer">
+              <button className="ghost-button" type="button" onClick={() => setConfirmDelete(null)}>取消</button>
+              <button
+                className="danger-button"
+                type="button"
+                onClick={() => {
+                  if (confirmDelete.type === "single") {
+                    if (confirmDelete.ruleId) {
+                      void handleDeleteRule(confirmDelete.ruleId);
+                    }
+                  } else {
+                    void handleDeleteSelectedRules();
+                  }
+                  setConfirmDelete(null);
+                }}
+                style={{ minWidth: "80px" }}
+              >
+                确定删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </main>
   );
