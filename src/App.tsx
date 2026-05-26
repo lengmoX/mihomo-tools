@@ -592,6 +592,116 @@ function buildInboundProxyUrl(rule: ProxyRule) {
   return `${scheme}://${rule.inbound.listen}:${rule.inbound.port}`;
 }
 
+/** Serialize an OutboundConfig back to its canonical proxy URL string. */
+function buildOutboundUrl(outbound: OutboundConfig): string {
+  const enc = (s: string) => encodeURIComponent(s);
+
+  if (outbound.protocol === "socks") {
+    const auth = outbound.auth ? `${enc(outbound.auth.username)}:${enc(outbound.auth.password)}@` : "";
+    return `socks5://${auth}${outbound.host}:${outbound.port}`;
+  }
+
+  if (outbound.protocol === "shadowsocks") {
+    // Standard ss:// with base64-encoded userinfo: ss://base64(method:password)@host:port
+    // Use safe btoa with TextEncoder for non-ASCII passwords
+    const bytes = new TextEncoder().encode(`${outbound.method}:${outbound.password}`);
+    const binString = Array.from(bytes, (byte) => String.fromCodePoint(byte)).join("");
+    const userinfo = btoa(binString);
+    let url = `ss://${userinfo}@${outbound.address}:${outbound.port}`;
+    const params: string[] = [];
+    if (outbound.uot) params.push("uot=1");
+    if (outbound.uotVersion != null) params.push(`uotVersion=${outbound.uotVersion}`);
+    if (params.length) url += `?${params.join("&")}`;
+    return url;
+  }
+
+  if (outbound.protocol === "vless") {
+    const params: string[] = [];
+    params.push(`encryption=${enc(outbound.encryption ?? "none")}`);
+    if (outbound.flow) params.push(`flow=${enc(outbound.flow)}`);
+    const transport = outbound.transport;
+    params.push(`type=${enc(transport.kind)}`);
+    if (transport.kind === "ws") {
+      if (transport.path) params.push(`path=${enc(transport.path)}`);
+      if (transport.host) params.push(`host=${enc(transport.host)}`);
+    }
+    if (outbound.tls) {
+      params.push("security=tls");
+      if (outbound.tls.serverName) params.push(`sni=${enc(outbound.tls.serverName)}`);
+      if (outbound.tls.fingerprint) params.push(`fp=${enc(outbound.tls.fingerprint)}`);
+      if (outbound.tls.allowInsecure) params.push("allowInsecure=1");
+    } else if (outbound.reality) {
+      params.push("security=reality");
+      if (outbound.reality.serverName) params.push(`sni=${enc(outbound.reality.serverName)}`);
+      if (outbound.reality.fingerprint) params.push(`fp=${enc(outbound.reality.fingerprint)}`);
+      params.push(`pbk=${enc(outbound.reality.publicKey)}`);
+      if (outbound.reality.shortId) params.push(`sid=${enc(outbound.reality.shortId)}`);
+      if (outbound.reality.spiderX) params.push(`spx=${enc(outbound.reality.spiderX)}`);
+    } else {
+      params.push("security=none");
+    }
+    return `vless://${enc(outbound.id)}@${outbound.address}:${outbound.port}?${params.join("&")}`;
+  }
+
+  if (outbound.protocol === "trojan") {
+    const params: string[] = [];
+    const transport = outbound.transport;
+    params.push(`type=${enc(transport.kind)}`);
+    if (transport.kind === "ws") {
+      if (transport.path) params.push(`path=${enc(transport.path)}`);
+      if (transport.host) params.push(`host=${enc(transport.host)}`);
+    }
+    if (outbound.tls) {
+      params.push("security=tls");
+      if (outbound.tls.serverName) params.push(`sni=${enc(outbound.tls.serverName)}`);
+      if (outbound.tls.fingerprint) params.push(`fp=${enc(outbound.tls.fingerprint)}`);
+      if (outbound.tls.allowInsecure) params.push("allowInsecure=1");
+    } else if (outbound.reality) {
+      params.push("security=reality");
+      if (outbound.reality.serverName) params.push(`sni=${enc(outbound.reality.serverName)}`);
+      if (outbound.reality.fingerprint) params.push(`fp=${enc(outbound.reality.fingerprint)}`);
+      params.push(`pbk=${enc(outbound.reality.publicKey)}`);
+      if (outbound.reality.shortId) params.push(`sid=${enc(outbound.reality.shortId)}`);
+      if (outbound.reality.spiderX) params.push(`spx=${enc(outbound.reality.spiderX)}`);
+    }
+    if (outbound.email) params.push(`email=${enc(outbound.email)}`);
+    const queryStr = params.length ? `?${params.join("&")}` : "";
+    return `trojan://${enc(outbound.password)}@${outbound.address}:${outbound.port}${queryStr}`;
+  }
+
+  if (outbound.protocol === "anytls") {
+    const params: string[] = [];
+    if (outbound.clientFingerprint) params.push(`fp=${enc(outbound.clientFingerprint)}`);
+    if (outbound.udp != null) params.push(`udp=${outbound.udp ? "1" : "0"}`);
+    if (outbound.idleSessionCheckInterval != null) params.push(`idle-session-check-interval=${outbound.idleSessionCheckInterval}`);
+    if (outbound.idleSessionTimeout != null) params.push(`idle-session-timeout=${outbound.idleSessionTimeout}`);
+    if (outbound.minIdleSession != null) params.push(`min-idle-session=${outbound.minIdleSession}`);
+    if (outbound.sni) params.push(`sni=${enc(outbound.sni)}`);
+    if (outbound.alpn && outbound.alpn.length) params.push(`alpn=${enc(outbound.alpn.join(","))}`);
+    if (outbound.skipCertVerify) params.push("skip-cert-verify=1");
+    const queryStr = params.length ? `?${params.join("&")}` : "";
+    return `anytls://${enc(outbound.password)}@${outbound.address}:${outbound.port}${queryStr}`;
+  }
+
+  if (outbound.protocol === "hysteria2") {
+    const auth = outbound.password ? `${enc(outbound.password)}@` : "";
+    const params: string[] = [];
+    if (outbound.sni) params.push(`sni=${enc(outbound.sni)}`);
+    if (outbound.skipCertVerify) params.push("skip-cert-verify=1");
+    if (outbound.tfo) params.push("tfo=1");
+    if (outbound.up) params.push(`up=${enc(outbound.up)}`);
+    if (outbound.down) params.push(`down=${enc(outbound.down)}`);
+    if (outbound.obfs) {
+      params.push(`obfs=${enc(outbound.obfs.type)}`);
+      params.push(`obfs-password=${enc(outbound.obfs.password)}`);
+    }
+    const queryStr = params.length ? `?${params.join("&")}` : "";
+    return `hy2://${auth}${outbound.server}:${outbound.port}${queryStr}`;
+  }
+
+  return "";
+}
+
 
 
 function formatSpeed(bytesPerSec: number | undefined) {
@@ -1753,7 +1863,27 @@ function App() {
                 <section className="form-section">
                   <div className="form-grid">
                     <label className="field wide-field">
-                      <span>导入代理链接 (粘贴链接自动导入)</span>
+                      <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--space-2)" }}>
+                        <span>导入代理链接 (粘贴链接自动导入)</span>
+                        {(() => {
+                          const outbound = buildOutboundFromDraft(ruleModal.draft);
+                          const url = outbound ? buildOutboundUrl(outbound) : "";
+                          const copyKey = "modal-outbound-url";
+                          const isCopied = copiedKey === copyKey;
+                          return url ? (
+                            <button
+                              type="button"
+                              className="copy-button compact-copy"
+                              title={isCopied ? "已复制" : "复制出站配置为链接"}
+                              style={{ flexShrink: 0, fontSize: "var(--text-xs)", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                              onClick={() => void copyToClipboard(copyKey, url)}
+                            >
+                              <Icon name={isCopied ? "check" : "copy"} />
+                              {isCopied ? "已复制" : "复制链接"}
+                            </button>
+                          ) : null;
+                        })()}
+                      </span>
                       <input
                         type="text"
                         value={ruleModal.draft.outboundProxyUrl}
