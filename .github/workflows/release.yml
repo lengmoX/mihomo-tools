@@ -117,6 +117,8 @@ jobs:
       # ─── Download Mihomo Core ──────────────────────────────────────────
       - name: Download latest Mihomo core
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "🔽 Downloading latest Mihomo core for ${{ matrix.platform }}-${{ matrix.arch }}..."
           # Retry up to 3 times in case of transient network issues

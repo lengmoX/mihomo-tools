@@ -26,11 +26,15 @@ async function downloadMihomo(targetDirInput) {
 
   try {
     console.log(`Fetching latest release information from ${API_URL}...`);
-    const response = await fetch(API_URL, {
-      headers: {
-        'User-Agent': 'mihomo-tools-downloader',
-      },
-    });
+    const headers = { 'User-Agent': 'mihomo-tools-downloader' };
+    // Use GITHUB_TOKEN if available to avoid API rate limits (60/hr → 5000/hr)
+    const token = process.env.GITHUB_TOKEN;
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+      console.log('Using GITHUB_TOKEN for authenticated API access.');
+    }
+
+    const response = await fetch(API_URL, { headers });
 
     if (!response.ok) {
       throw new Error(`Failed to fetch release info: ${response.statusText} (${response.status})`);
