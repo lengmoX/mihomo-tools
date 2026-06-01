@@ -5,9 +5,19 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      version_override:
+        description: 'Override version (leave empty to use version.txt)'
+        required: false
+        type: string
 
 permissions:
   contents: write
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
 
 jobs:
   build-and-release:
@@ -21,12 +31,14 @@ jobs:
             rust-target: x86_64-pc-windows-msvc
             exe-name: mihomo-tools.exe
             archive-suffix: windows-x64
+
           - os: macos-latest
             platform: macos
             arch: arm64
             rust-target: aarch64-apple-darwin
             exe-name: mihomo-tools
             archive-suffix: macos-arm64
+
           - os: macos-13
             platform: macos
             arch: x64
@@ -37,115 +49,228 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
+      # ─── Checkout & Version ────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Get version
-        id: get_version
+      - name: Determine version
+        id: version
         shell: bash
         run: |
-          ver=$(cat version.txt | tr -d '[:space:]')
+          if [ -n "${{ inputs.version_override }}" ]; then
+            ver="${{ inputs.version_override }}"
+          else
+            ver=$(cat version.txt | tr -d '[:space:]')
+          fi
           echo "VERSION=$ver" >> $GITHUB_OUTPUT
+          echo "ARCHIVE_NAME=mihomo-tools-${{ matrix.archive-suffix }}-v${ver}.zip" >> $GITHUB_OUTPUT
+          echo "📦 Building version: $ver for ${{ matrix.archive-suffix }}"
 
+      # ─── Node.js & pnpm ────────────────────────────────────────────────
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v3
+        uses: pnpm/action-setup@v4
         with:
           version: 9
+          run_install: false
 
-      - name: Install dependencies
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install Node dependencies
         run: pnpm install --frozen-lockfile
 
+      # ─── Rust Toolchain & Cache ────────────────────────────────────────
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
           target: ${{ matrix.rust-target }}
 
-      - name: Download Mihomo Core
-        run: pnpm run download-mihomo
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            src-tauri/target/${{ matrix.rust-target }}/release/.fingerprint
+            src-tauri/target/${{ matrix.rust-target }}/release/build
+            src-tauri/target/${{ matrix.rust-target }}/release/deps
+            src-tauri/target/${{ matrix.rust-target }}/release/incremental
+          key: ${{ runner.os }}-rust-${{ matrix.rust-target }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-${{ matrix.rust-target }}-
 
-      - name: Build Tauri app
+      # ─── Download Mihomo Core ──────────────────────────────────────────
+      - name: Download latest Mihomo core
+        shell: bash
+        run: |
+          echo "🔽 Downloading latest Mihomo core for ${{ matrix.platform }}-${{ matrix.arch }}..."
+          # Retry up to 3 times in case of transient network issues
+          for attempt in 1 2 3; do
+            echo "Attempt $attempt of 3..."
+            if pnpm run download-mihomo; then
+              echo "✅ Mihomo core downloaded successfully"
+              break
+            fi
+            if [ $attempt -eq 3 ]; then
+              echo "❌ Failed to download Mihomo core after 3 attempts"
+              exit 1
+            fi
+            echo "⏳ Retrying in 10 seconds..."
+            sleep 10
+          done
+
+      - name: Verify Mihomo core binary
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            ls -la mihomo/mihomo.exe
+          else
+            ls -la mihomo/mihomo
+            file mihomo/mihomo
+          fi
+
+      # ─── Build ─────────────────────────────────────────────────────────
+      - name: Build Tauri app (no-bundle portable)
         run: pnpm tauri build --no-bundle --target ${{ matrix.rust-target }}
 
-      # ─── Windows packaging ───────────────────────────────────────────────────
-      - name: Prepare portable layout (Windows)
+      # ─── Package (Windows) ─────────────────────────────────────────────
+      - name: Prepare portable archive (Windows)
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          $version = "${{ steps.get_version.outputs.VERSION }}"
           $outDir = "mihomo-tools-portable"
-          New-Item -ItemType Directory -Force -Path $outDir
-          New-Item -ItemType Directory -Force -Path "$outDir/data"
-          Copy-Item -Path "src-tauri/target/${{ matrix.rust-target }}/release/mihomo-tools.exe" `
-                    -Destination "$outDir/mihomo-tools.exe"
-          Copy-Item -Recurse -Path "mihomo" -Destination "$outDir/mihomo"
-          $archive = "mihomo-tools-${{ matrix.archive-suffix }}-v$version.zip"
-          tar -a -c -f $archive -C $outDir .
-          echo "ARCHIVE_NAME=$archive" >> $env:GITHUB_OUTPUT
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          New-Item -ItemType Directory -Force -Path "$outDir/data" | Out-Null
 
-      # ─── macOS packaging ─────────────────────────────────────────────────────
-      - name: Prepare portable layout (macOS)
+          # Copy Tauri binary
+          Copy-Item -Path "src-tauri/target/${{ matrix.rust-target }}/release/${{ matrix.exe-name }}" `
+                    -Destination "$outDir/${{ matrix.exe-name }}"
+
+          # Copy Mihomo core
+          Copy-Item -Recurse -Path "mihomo" -Destination "$outDir/mihomo"
+
+          # Create archive
+          $archive = "${{ steps.version.outputs.ARCHIVE_NAME }}"
+          Write-Host "📦 Creating archive: $archive"
+          Compress-Archive -Path "$outDir/*" -DestinationPath $archive -Force
+          Write-Host "✅ Archive created: $(Get-Item $archive | Select-Object -ExpandProperty Length) bytes"
+
+      # ─── Package (macOS) ───────────────────────────────────────────────
+      - name: Prepare portable archive (macOS)
         if: matrix.platform == 'macos'
         shell: bash
         run: |
-          VERSION="${{ steps.get_version.outputs.VERSION }}"
           OUT_DIR="mihomo-tools-portable"
           mkdir -p "$OUT_DIR/data"
-          cp "src-tauri/target/${{ matrix.rust-target }}/release/mihomo-tools" \
-             "$OUT_DIR/mihomo-tools"
-          chmod +x "$OUT_DIR/mihomo-tools"
+
+          # Copy Tauri binary
+          cp "src-tauri/target/${{ matrix.rust-target }}/release/${{ matrix.exe-name }}" \
+             "$OUT_DIR/${{ matrix.exe-name }}"
+          chmod +x "$OUT_DIR/${{ matrix.exe-name }}"
+
+          # Copy Mihomo core
           cp -r mihomo "$OUT_DIR/mihomo"
-          ARCHIVE="mihomo-tools-${{ matrix.archive-suffix }}-v${VERSION}.zip"
+          chmod +x "$OUT_DIR/mihomo/mihomo"
+
+          # Create archive
+          ARCHIVE="${{ steps.version.outputs.ARCHIVE_NAME }}"
+          echo "📦 Creating archive: $ARCHIVE"
           cd "$OUT_DIR"
           zip -r "../$ARCHIVE" .
           cd ..
-          echo "ARCHIVE_NAME=$ARCHIVE" >> $GITHUB_OUTPUT
+          echo "✅ Archive created: $(du -h "$ARCHIVE" | cut -f1)"
 
-      - name: Set archive name env (Windows)
-        if: matrix.platform == 'windows'
-        id: archive_win
-        shell: pwsh
-        run: |
-          $version = "${{ steps.get_version.outputs.VERSION }}"
-          echo "ARCHIVE_NAME=mihomo-tools-${{ matrix.archive-suffix }}-v$version.zip" >> $env:GITHUB_OUTPUT
+      # ─── Upload ────────────────────────────────────────────────────────
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.ARCHIVE_NAME }}
+          path: ${{ steps.version.outputs.ARCHIVE_NAME }}
+          retention-days: 7
 
-      - name: Set archive name env (macOS)
-        if: matrix.platform == 'macos'
-        id: archive_mac
+  # ═══════════════════════════════════════════════════════════════════════
+  #  Publish GitHub Release (runs after all builds complete)
+  # ═══════════════════════════════════════════════════════════════════════
+  publish-release:
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
         shell: bash
         run: |
-          VERSION="${{ steps.get_version.outputs.VERSION }}"
-          echo "ARCHIVE_NAME=mihomo-tools-${{ matrix.archive-suffix }}-v${VERSION}.zip" >> $GITHUB_OUTPUT
+          ver=$(cat version.txt | tr -d '[:space:]')
+          echo "VERSION=$ver" >> $GITHUB_OUTPUT
 
-      - name: Upload Release Asset
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: List release assets
+        run: |
+          echo "📦 Release assets:"
+          ls -lh release-assets/
+
+      - name: Fetch Mihomo version used
+        id: mihomo-version
+        run: |
+          MIHOMO_VER=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+')
+          echo "MIHOMO_VERSION=$MIHOMO_VER" >> $GITHUB_OUTPUT
+          echo "Mihomo core version: $MIHOMO_VER"
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.get_version.outputs.VERSION }}
-          files: mihomo-tools-${{ matrix.archive-suffix }}-v${{ steps.get_version.outputs.VERSION }}.zip
-          name: Release v${{ steps.get_version.outputs.VERSION }}
+          tag_name: v${{ steps.version.outputs.VERSION }}
+          name: Release v${{ steps.version.outputs.VERSION }}
+          files: release-assets/*.zip
           body: |
+            ## mihomo-tools v${{ steps.version.outputs.VERSION }}
+
             Portable release of **mihomo-tools** – a local Mihomo (Clash.Meta) proxy lifecycle manager.
 
-            ## Downloads
+            ### 📦 Bundled Mihomo Core
+            - Version: `${{ steps.mihomo-version.outputs.MIHOMO_VERSION }}`
+            - Source: [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)
 
-            | Platform | Archive |
-            |----------|---------|
-            | Windows x64 | `mihomo-tools-windows-x64-v${{ steps.get_version.outputs.VERSION }}.zip` |
-            | macOS Apple Silicon (arm64) | `mihomo-tools-macos-arm64-v${{ steps.get_version.outputs.VERSION }}.zip` |
-            | macOS Intel (x64) | `mihomo-tools-macos-x64-v${{ steps.get_version.outputs.VERSION }}.zip` |
+            ### ⬇️ Downloads
 
-            ## Installation
+            | Platform | Architecture | File |
+            |----------|-------------|------|
+            | Windows  | x64         | `mihomo-tools-windows-x64-v${{ steps.version.outputs.VERSION }}.zip` |
+            | macOS    | Apple Silicon (arm64) | `mihomo-tools-macos-arm64-v${{ steps.version.outputs.VERSION }}.zip` |
+            | macOS    | Intel (x64) | `mihomo-tools-macos-x64-v${{ steps.version.outputs.VERSION }}.zip` |
 
-            1. Download the archive for your platform.
-            2. Extract to any directory.
-            3. Run `mihomo-tools.exe` (Windows) or `./mihomo-tools` (macOS).
+            ### 🚀 Quick Start
 
-            > The Mihomo core binary is bundled inside the `mihomo/` folder.
+            1. Download the archive for your platform
+            2. Extract to any directory
+            3. Run `mihomo-tools.exe` (Windows) or `./mihomo-tools` (macOS)
+
+            > **Note:** The Mihomo core binary is pre-bundled inside the `mihomo/` folder.
+            > A `data/` directory will be created automatically for configuration storage.
           draft: false
           prerelease: false
         env:
