@@ -28,7 +28,7 @@ mihomo-tools/
 │   ├── download-mihomo.js      # Auto-downloads latest Mihomo core from GitHub Releases
 │   └── release.js              # Version bump, git tag, and push automation
 ├── .github/workflows/
-│   └── release.yml             # CI/CD: parallel builds for Win x64, macOS arm64, macOS x64
+│   └── release.yml             # CI/CD: parallel builds for Win x64 and macOS arm64
 ├── src-tauri/                  # Desktop Shell (Tauri 2 + Rust)
 │   ├── src/
 │   │   ├── main.rs             # Native entry point (delegates to mihomo_tools_lib::run)
@@ -175,10 +175,9 @@ pnpm tauri dev            # Start dev mode (Vite HMR + Tauri)
 ### Release Workflow
 1. Edit `version.txt` with the new SemVer version.
 2. Run `pnpm run release` — auto-syncs `package.json` and `tauri.conf.json`, commits, tags, and pushes.
-3. GitHub Actions CI (`.github/workflows/release.yml`) builds 3 platforms in parallel:
+3. GitHub Actions CI (`.github/workflows/release.yml`) builds 2 platforms in parallel:
    - Windows x64 (`windows-latest`)
    - macOS arm64 (`macos-latest`)
-   - macOS x64 (`macos-13`)
 4. Each job: downloads latest Mihomo core → builds Tauri app → packages portable `.zip` → uploads to GitHub Release.
 
 ---

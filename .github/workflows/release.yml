@@ -39,12 +39,6 @@ jobs:
             exe-name: mihomo-tools
             archive-suffix: macos-arm64
 
-          - os: macos-13
-            platform: macos
-            arch: x64
-            rust-target: x86_64-apple-darwin
-            exe-name: mihomo-tools
-            archive-suffix: macos-x64
 
     runs-on: ${{ matrix.os }}
 
@@ -263,7 +257,6 @@ jobs:
             |----------|-------------|------|
             | Windows  | x64         | `mihomo-tools-windows-x64-v${{ steps.version.outputs.VERSION }}.zip` |
             | macOS    | Apple Silicon (arm64) | `mihomo-tools-macos-arm64-v${{ steps.version.outputs.VERSION }}.zip` |
-            | macOS    | Intel (x64) | `mihomo-tools-macos-x64-v${{ steps.version.outputs.VERSION }}.zip` |
 
             ### 🚀 Quick Start
 
