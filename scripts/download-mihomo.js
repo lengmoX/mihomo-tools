@@ -96,13 +96,18 @@ async function downloadMihomo(targetDirInput) {
       fs.writeFileSync(tempZipPath, buffer);
       console.log(`Saved temporary archive to: ${tempZipPath}`);
 
-      console.log(`Extracting ZIP archive using system tar...`);
+      console.log(`Extracting ZIP archive...`);
       try {
-        execSync(`tar -xf "${tempZipPath}" -C "${targetDir}"`, { stdio: 'inherit' });
+        // Use PowerShell Expand-Archive on Windows to avoid bsdtar
+        // misinterpreting drive letters (e.g. D:) as remote host specs
+        execSync(
+          `powershell -NoProfile -Command "Expand-Archive -Path '${tempZipPath}' -DestinationPath '${targetDir}' -Force"`,
+          { stdio: 'inherit' }
+        );
         console.log('Extraction completed successfully.');
-      } catch (tarError) {
-        console.error('Failed to extract using tar.');
-        throw tarError;
+      } catch (extractError) {
+        console.error('Failed to extract ZIP archive.');
+        throw extractError;
       } finally {
         if (fs.existsSync(tempZipPath)) {
           fs.unlinkSync(tempZipPath);
